@@ -3,6 +3,7 @@ import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
+from app.api.routes.health import router as health_router
 
 load_dotenv()
 
@@ -19,11 +20,5 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.get("/")
-def read_root():
-    return {"Hello": "World"}
-
-@app.get("/health")
-def health():
-    return {"status": "ok"}
+app.include_router(health_router, prefix="")
 
