@@ -4,3 +4,4 @@ python-dotenv
 python-multipart
 PyJWT
 google-cloud-storage
+opencv-python
