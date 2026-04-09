@@ -60,3 +60,19 @@ def create_project(
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    
+@router.get("/projects", response_model=List[ProjectResponse])
+def get_projects(user_id: str = Depends(get_current_user)):
+    try:
+        result = (
+            supabase
+            .table("projects")
+            .select("*")
+            .eq("owner", user_id)
+            .execute()
+        )
+
+        return result.data or []
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
