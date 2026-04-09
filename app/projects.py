@@ -76,3 +76,23 @@ def get_projects(user_id: str = Depends(get_current_user)):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/projects/{project_id}", response_model=ProjectResponse)
+def get_project(project_id: str, user_id: str = Depends(get_current_user)):
+    try:
+        result = (
+            supabase
+            .table("projects")
+            .select("*")
+            .eq("id", project_id)
+            .eq("owner", user_id)
+            .execute()
+        )
+
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        return result.data[0]
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
