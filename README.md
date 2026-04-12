@@ -32,7 +32,7 @@ SUPABASE_KEY=your_supabase_key
 
 ## 5. Run Server
 ```
-uvicorn main:app --reload
+uvicorn app.main:app --reload
 ```
 
 ## 6. Access API
