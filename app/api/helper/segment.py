@@ -3,10 +3,6 @@ from fastapi import HTTPException
 supabase = get_supabase_client()
 
 def get_active_label_ids(project_id: str) -> list[str] | None:
-    """
-    Return enabled label_ids for the project, or None if none are configured
-    (which tells the model service to use the full vocab).
-    """
     try:
         result = (
             supabase
