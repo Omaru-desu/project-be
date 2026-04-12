@@ -22,7 +22,7 @@ async def upload_files(
     user_id: str = Depends(get_current_user)
 ):
     project = get_project_for_user(project_id, user_id)
-    project_type = project["project_type"]
+    project_type = project["type"]
     bucket_name = get_bucket_name(project_type)
 
     if not files:

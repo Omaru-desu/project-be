@@ -2,12 +2,11 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from app.auth import get_current_user
 from app.api.helper.upload import (
-    get_active_label_ids,
     get_frames_for_upload,
     get_project_for_user,
-    insert_detection_records,
     update_upload_record,
 )
+from app.api.helper.segment import get_active_label_ids, insert_detection_records
 from app.services.model_service import segment_frames
 
 router = APIRouter()
