@@ -1,10 +1,5 @@
 # Omaru
 
-- OmarK2804 - Omar Khalif Muchzi
-s4905768@student.uq.edu.au
-- niboobin - Muhammad Obin Mandalika
-s4905859@student.uq.edu.au
-
 # REST API Backend
 This is the backend of the project built using REST API principles with FastAPI. It handles data processing, API endpoints, and integration with Supabase as the database.
 
