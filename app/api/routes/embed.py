@@ -70,13 +70,16 @@ def embed_upload_detections(
     if not detections:
         raise HTTPException(status_code=404, detail="No detections found — run /segment first")
 
+    frames = get_frames_for_upload(upload_id)
+    frame_uri_map = {f["id"]: f["frame_gcs_uri"] for f in frames}
+
     frames_map: dict[str, dict] = {}
     for det in detections:
         fid = det["frame_id"]
         if fid not in frames_map:
             frames_map[fid] = {
                 "frame_id": fid,
-                "frame_gcs_uri": "", 
+                "frame_gcs_uri": frame_uri_map.get(fid, ""),
                 "detections": [],
             }
         frames_map[fid]["detections"].append({
