@@ -9,14 +9,19 @@ git clone <repo-url>
 ```
 
 ## 2. Create Virtual Environment
+Create a virtual environment:
 ```
-# Mac/Linux: 
 python -m venv env
-source env/bin/activate   
-
-# Windows:
-env\Scripts\activate
 ```
+Activate it:
+```
+# Windows:
+env\Scripts\activate.bat
+
+# Mac/Linux:
+source env/bin/activate
+```
+If successful, (env) will appear in the terminal.
 
 ## 3. Install Dependencies
 ```
