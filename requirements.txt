@@ -3,6 +3,6 @@ uvicorn[standard]
 python-dotenv
 python-multipart
 google-cloud-storage
-opencv-python
+opencv-python-headless
 supabase
 pillow
