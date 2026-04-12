@@ -9,14 +9,19 @@ git clone <repo-url>
 ```
 
 ## 2. Create Virtual Environment
+Create a virtual environment:
 ```
-# Mac/Linux: 
 python -m venv env
-source env/bin/activate   
-
-# Windows:
-env\Scripts\activate
 ```
+Activate it:
+```
+# Windows:
+env\Scripts\activate.bat
+
+# Mac/Linux:
+source env/bin/activate
+```
+If successful, (env) will appear in the terminal.
 
 ## 3. Install Dependencies
 ```
@@ -32,7 +37,7 @@ SUPABASE_KEY=your_supabase_key
 
 ## 5. Run Server
 ```
-uvicorn main:app --reload
+uvicorn app.main:app --reload
 ```
 
 ## 6. Access API
