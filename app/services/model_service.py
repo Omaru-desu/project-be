@@ -24,6 +24,9 @@ def _post(path: str, payload: dict, timeout: float = 120.0) -> dict:
         ) from exc
     return response.json()
 
+def embed_frames(frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return _post("/embed/frames", {"frames": frames})["results"]
+
 
 def segment_frames(frames: list[dict[str, Any]], label_ids: list[str] | None = None) -> list[dict[str, Any]]:
     payload: dict[str, Any] = {"frames": frames}
