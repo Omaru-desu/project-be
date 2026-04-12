@@ -3,9 +3,15 @@ from datetime import timedelta
 from google.cloud import storage
 
 client = storage.Client()
-bucket_name = "test-omaru"
+ACTIVE_BUCKET = "active-omaru"   
+TEST_BUCKET = "test-omaru"  
 
-def upload_to_gcp(file_bytes, destination_blob_name, content_type):
+def get_bucket_name(project_type: str) -> str:
+    if project_type == "test":
+        return TEST_BUCKET
+    return ACTIVE_BUCKET
+
+def upload_to_gcp(file_bytes, bucket_name, destination_blob_name, content_type):
     bucket = client.bucket(bucket_name)
     blob = bucket.blob(destination_blob_name)
 
@@ -16,5 +22,9 @@ def upload_to_gcp(file_bytes, destination_blob_name, content_type):
         expiration=timedelta(minutes=15),
         method="GET",
     )
+    gcs_uri = f"gs://{bucket_name}/{destination_blob_name}"
 
-    return url
+    return  {
+        "gcs_uri": gcs_uri,
+        "signed_url": url,
+    }
