@@ -9,6 +9,7 @@ from supabase import create_client, Client
 from typing import Optional
 
 from app.auth import get_current_user
+from app.core.vocab import LABEL_IDS
 
 load_dotenv()
 
@@ -60,6 +61,14 @@ def create_project(
 
         if not result.data:
             raise HTTPException(status_code=500, detail="Failed to create project")
+
+        project_id = result.data[0]["id"]
+
+        label_rows = [
+            {"project_id": project_id, "label_id": label_id, "enabled": True}
+            for label_id in LABEL_IDS
+        ]
+        supabase.table("project_labels").insert(label_rows).execute()
 
         return result.data[0]
 
