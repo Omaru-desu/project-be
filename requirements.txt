@@ -2,5 +2,7 @@ fastapi
 uvicorn[standard]
 python-dotenv
 python-multipart
-PyJWT
+google-cloud-storage
+opencv-python
 supabase
+pillow

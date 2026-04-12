@@ -18,6 +18,7 @@ env/
 # Environment variables
 .env
 .env.*
+*.json
 
 # macOS
 .DS_Store
