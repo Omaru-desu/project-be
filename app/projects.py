@@ -25,7 +25,7 @@ router = APIRouter()
 class ProjectCreate(BaseModel):
     name: str
     description: str
-    status: str
+    type: str
     frame_count: int
 
 
@@ -33,7 +33,7 @@ class ProjectResponse(BaseModel):
     id: str
     name: str
     description: str
-    status: str
+    type: str
     frame_count: int
     created_at: datetime
     owner: str
@@ -51,7 +51,7 @@ def create_project(
     payload = {
         "name": project.name,
         "description": project.description,
-        "status": project.status,
+        "type": project.type,
         "frame_count": project.frame_count,
         "owner": user_id
     }
