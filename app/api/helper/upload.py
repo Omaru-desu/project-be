@@ -101,3 +101,69 @@ def get_frames_for_upload(upload_id: str):
         raise HTTPException(status_code=500, detail="Failed to retrieve frames") from exc
 
     return result.data or []
+
+def get_project_frames_with_detections(project_id: str):
+    try:
+        uploads_res = (
+            supabase
+            .table("uploads")
+            .select("id")
+            .eq("project_id", project_id)
+            .execute()
+        )
+        uploads = uploads_res.data or []
+
+        upload_ids = [u["id"] for u in uploads]
+
+        if not upload_ids:
+            return []
+
+        frames_res = (
+            supabase
+            .table("frames")
+            .select("*")
+            .in_("upload_id", upload_ids)
+            .execute()
+        )
+        frames = frames_res.data or []
+
+        frame_ids = [f["id"] for f in frames]
+
+        detections_res = (
+            supabase
+            .table("detections")
+            .select("*")
+            .in_("frame_id", frame_ids)
+            .execute()
+        )
+        detections = detections_res.data or []
+
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail="Failed to fetch project data") from exc
+
+    detections_map = {}
+    for det in detections:
+        fid = det["frame_id"]
+        if fid not in detections_map:
+            detections_map[fid] = []
+
+        detections_map[fid].append({
+            "id": det["id"],
+            "bbox": det["bbox"],
+            "label_id": det["label_id"],
+            "status": det["status"],
+            "taxon": det.get("taxon"),
+        })
+
+    result = []
+    for frame in frames:
+        result.append({
+            "id": frame["id"],
+            "upload_id": frame["upload_id"],
+            "source_filename": frame["source_filename"],
+            "frame_gcs_uri": frame["frame_gcs_uri"],
+            "status": frame["status"],
+            "detections": detections_map.get(frame["id"], [])
+        })
+
+    return result

@@ -11,7 +11,7 @@ from io import BytesIO
 from app.auth import get_current_user
 from app.services.gcp_storage import upload_to_gcp, get_bucket_name
 from app.services.video_processor import extract_frames
-from app.api.helper.upload import create_upload_record, update_upload_record, insert_frame_records, get_project_for_user
+from app.api.helper.upload import create_upload_record, update_upload_record, insert_frame_records, get_project_for_user, get_project_frames_with_detections
 from app.api.helper.segment import get_active_label_ids
 from app.services.process_service import process_upload
 
@@ -246,3 +246,14 @@ async def upload_files(
         }
 
     raise HTTPException(status_code=400, detail="Unsupported upload request")
+
+@router.get("/projects/{project_id}/frames")
+def get_project_frames(
+    project_id: str,
+    user_id: str = Depends(get_current_user),
+):
+    get_project_for_user(project_id, user_id) # check ownership
+
+    frames = get_project_frames_with_detections(project_id)
+
+    return {"frames": frames}
