@@ -8,7 +8,7 @@ def extract_frames(video_path, output_folder):
     cap = cv2.VideoCapture(video_path)
     frame_count = 0
     frame_paths = []
-    frame_skips = 5
+    frame_skips = 10
     saved_index = 0
     try:
         while True:
@@ -33,7 +33,6 @@ def extract_frames(video_path, output_folder):
     finally:
         cap.release()
         cap = None
-        cv2.destroyAllWindows()
         gc.collect()
 
     return frame_paths

@@ -77,6 +77,17 @@ def get_project_for_user(project_id: str, user_id: str):
 
     return project
 
+def update_frame_record(frame_id: str, update_data: dict):
+    result = (
+        supabase
+        .table("frames")
+        .update(update_data)
+        .eq("id", frame_id)
+        .execute()
+    )
+    return result.data[0] if result.data else None
+
+
 def get_frames_for_upload(upload_id: str):
     try:
         result = (

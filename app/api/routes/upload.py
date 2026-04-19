@@ -3,7 +3,7 @@ import uuid
 import tempfile
 from typing import List
 
-from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
+from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, BackgroundTasks
 
 from PIL import Image
 from io import BytesIO
@@ -12,12 +12,15 @@ from app.auth import get_current_user
 from app.services.gcp_storage import upload_to_gcp, get_bucket_name
 from app.services.video_processor import extract_frames
 from app.api.helper.upload import create_upload_record, update_upload_record, insert_frame_records, get_project_for_user
+from app.api.helper.segment import get_active_label_ids
+from app.services.process_service import process_upload
 
 router = APIRouter()
 
 @router.post("/projects/{project_id}/upload")
 async def upload_files(
     project_id: str,
+    background_tasks: BackgroundTasks,
     files: List[UploadFile] = File(...),
     user_id: str = Depends(get_current_user)
 ):
@@ -75,6 +78,7 @@ async def upload_files(
 
         uploaded_frames = []
         frame_rows = []
+        frame_bytes_map = {}
 
         for idx, file in enumerate(image_files):
             content = await file.read()
@@ -96,14 +100,7 @@ async def upload_files(
             image = Image.open(BytesIO(content)).convert("RGB")
             buffer = BytesIO()
             image.save(buffer, format="JPEG", quality=95)
-            buffer.seek(0)
-
-            frame_uploaded = upload_to_gcp(
-                file_bytes=buffer.getvalue(),
-                bucket_name=bucket_name,
-                destination_blob_name=frame_gcs_path,
-                content_type="image/jpeg",
-            )
+            frame_bytes_map[frame_id] = buffer.getvalue()
 
             frame_payload = {
                 "id": frame_id,
@@ -111,7 +108,7 @@ async def upload_files(
                 "upload_id": upload_id,
                 "owner": user_id,
                 "source_filename": file.filename,
-                "frame_gcs_uri": frame_uploaded["gcs_uri"],
+                "frame_gcs_uri": f"gs://{bucket_name}/{frame_gcs_path}",
                 "status": "queued",
             }
 
@@ -124,8 +121,19 @@ async def upload_files(
             upload_id,
             {
                 "frame_count": len(frame_rows),
-                "status": "frames_ready",
+                "status": "processing_frames",
             }
+        )
+
+        label_ids = get_active_label_ids(project_id)
+        background_tasks.add_task(
+            process_upload,
+            upload_id=upload_id,
+            project_id=project_id,
+            user_id=user_id,
+            frame_records=frame_rows,
+            label_ids=label_ids,
+            frame_bytes_map=frame_bytes_map,
         )
 
         return {
@@ -136,7 +144,7 @@ async def upload_files(
             "bucket": bucket_name,
             "frame_count": len(uploaded_frames),
             "frames": uploaded_frames,
-            "status": "frames_ready",
+            "status": "processing_frames",
         }
 
     if video_files:
@@ -169,6 +177,7 @@ async def upload_files(
 
         uploaded_frames = []
         frame_rows = []
+        frame_bytes_map = {}
 
         with tempfile.TemporaryDirectory() as temp_dir:
             video_path = os.path.join(temp_dir, file.filename)
@@ -182,22 +191,18 @@ async def upload_files(
                 with open(frame["local_path"], "rb") as f:
                     frame_bytes = f.read()
 
+                frame_id = f"{upload_id}_{idx:06d}"
+                frame_bytes_map[frame_id] = frame_bytes
+
                 frame_filename = f"frame_{idx:06d}.jpg"
                 frame_gcs_path = (
                     f"projects/{project_id}/uploads/{upload_id}/frames/{frame_filename}"
                 )
 
-                uploaded = upload_to_gcp(
-                    file_bytes=frame_bytes,
-                    bucket_name=bucket_name,
-                    destination_blob_name=frame_gcs_path,
-                    content_type="image/jpeg",
-                )
-
                 frame_payload = {
-                    "id": f"{upload_id}_{idx:06d}",
+                    "id": frame_id,
                     "source_filename": frame["frame_filename"],
-                    "frame_gcs_uri": uploaded["gcs_uri"],
+                    "frame_gcs_uri": f"gs://{bucket_name}/{frame_gcs_path}",
                     "status": "queued",
                     "owner": user_id,
                     "upload_id": upload_id,
@@ -213,8 +218,19 @@ async def upload_files(
             upload_id,
             {
                 "frame_count": len(frame_rows),
-                "status": "frames_ready",
+                "status": "processing_frames",
             }
+        )
+
+        label_ids = get_active_label_ids(project_id)
+        background_tasks.add_task(
+            process_upload,
+            upload_id=upload_id,
+            project_id=project_id,
+            user_id=user_id,
+            frame_records=frame_rows,
+            label_ids=label_ids,
+            frame_bytes_map=frame_bytes_map,
         )
 
         return {
@@ -226,7 +242,7 @@ async def upload_files(
             "raw_gcs_uri": raw_uploaded["gcs_uri"],
             "frame_count": len(uploaded_frames),
             "frames": uploaded_frames,
-            "status": "frames_ready",
+            "status": "processing_frames",
         }
 
     raise HTTPException(status_code=400, detail="Unsupported upload request")
