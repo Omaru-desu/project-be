@@ -153,6 +153,8 @@ def get_project_frames_with_detections(project_id: str):
             "label_id": det["label_id"],
             "status": det["status"],
             "taxon": det.get("taxon"),
+            "display_label": det.get("display_label"),
+            "score": det.get("score"),
         })
 
     result = []
