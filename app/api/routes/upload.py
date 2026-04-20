@@ -15,11 +15,9 @@ from app.api.helper.upload import create_upload_record, update_upload_record, in
 from app.api.helper.segment import get_active_label_ids
 from app.services.process_service import process_upload
 
-import rosbag
-from cv_bridge import CvBridge
+from rosbags.rosbag1 import Reader
+from rosbags.image import message_to_cvimage
 import cv2
-
-import numpy as np
 
 router = APIRouter()
 
@@ -392,19 +390,19 @@ def extract_frames_from_rosbag(
     output_dir: str,
     image_topic: str = None,
 ):
-    bridge = CvBridge()
     extracted_frames = []
 
-    with rosbag.Bag(bag_path, "r") as bag:
-        topics_info = bag.get_type_and_topic_info().topics
-
+    with Reader(bag_path) as reader:
+        # Find image topics
         available_image_topics = [
-            topic_name
-            for topic_name, topic_info in topics_info.items()
-            if topic_info.msg_type in [
+            conn.topic
+            for conn in reader.connections
+            if conn.msgtype in (
+                "sensor_msgs/msg/Image",
+                "sensor_msgs/msg/CompressedImage",
                 "sensor_msgs/Image",
                 "sensor_msgs/CompressedImage",
-            ]
+            )
         ]
 
         if not available_image_topics:
@@ -415,20 +413,16 @@ def extract_frames_from_rosbag(
 
         selected_topic = image_topic or available_image_topics[0]
 
+        connections = [c for c in reader.connections if c.topic == selected_topic]
+
         idx = 0
-        for _, msg, _ in bag.read_messages(topics=[selected_topic]):
+        for conn, timestamp, rawdata in reader.messages(connections=connections):
             try:
-                if msg._type == "sensor_msgs/Image":
-                    cv_image = bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
-                elif msg._type == "sensor_msgs/CompressedImage":
-                    np_arr = np.frombuffer(msg.data, np.uint8)
-                    cv_image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
-                else:
-                    continue
+                msg = reader.deserialize(rawdata, conn.msgtype)
+                cv_image = message_to_cvimage(msg, "bgr8")
 
                 frame_filename = f"frame_{idx:06d}.jpg"
                 local_path = os.path.join(output_dir, frame_filename)
-
                 cv2.imwrite(local_path, cv_image)
 
                 extracted_frames.append({

@@ -8,3 +8,7 @@ supabase
 pillow
 httpx
 anyio
+rosbags
+cv_bridge
+rosbags.image
+
