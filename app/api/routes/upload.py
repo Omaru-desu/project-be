@@ -15,6 +15,12 @@ from app.api.helper.upload import create_upload_record, update_upload_record, in
 from app.api.helper.segment import get_active_label_ids
 from app.services.process_service import process_upload
 
+import rosbag
+from cv_bridge import CvBridge
+import cv2
+
+import numpy as np
+
 router = APIRouter()
 
 @router.post("/projects/{project_id}/upload")
@@ -35,28 +41,46 @@ async def upload_files(
 
     image_files = []
     video_files = []
+    rosbag_files = []
 
     for file in files:
         if not file.content_type:
             raise HTTPException(status_code=400, detail=f"Missing content type for {file.filename}")
+        
+        content_type = (file.content_type or "").lower()
+        filename = file.filename.lower()
 
         if file.content_type.startswith("image"):
             image_files.append(file)
         elif file.content_type.startswith("video"):
             video_files.append(file)
+        elif filename.endswith(".bag"):   
+            rosbag_files.append(file)
         else:
             raise HTTPException(status_code=400, detail=f"Unsupported file type: {file.filename}")
 
-    if image_files and video_files:
+    upload_groups = sum([
+    1 if image_files else 0,
+    1 if video_files else 0,
+    1 if rosbag_files else 0,  
+    ])
+
+    if upload_groups > 1:
         raise HTTPException(
             status_code=400,
-            detail="Please upload either images or a video in one request, not both"
-        )
+            detail="Please upload only one type per request: images, video, or rosbag"
+    )
 
     if len(video_files) > 1:
         raise HTTPException(
             status_code=400,
             detail="Only one video file is allowed per upload"
+        )
+
+    if len(rosbag_files) > 1:   
+        raise HTTPException(
+            status_code=400,
+            detail="Only one rosbag file is allowed per upload"
         )
 
     if image_files:
@@ -244,6 +268,102 @@ async def upload_files(
             "frames": uploaded_frames,
             "status": "processing_frames",
         }
+    
+    if rosbag_files: 
+        file = rosbag_files[0]
+        content = await file.read()
+        if not content:
+            raise HTTPException(status_code=400, detail="Empty rosbag file")
+
+        raw_path = f"projects/{project_id}/uploads/{upload_id}/raw/{file.filename}"
+
+        raw_uploaded = upload_to_gcp(
+            file_bytes=content,
+            bucket_name=bucket_name,
+            destination_blob_name=raw_path,
+            content_type=file.content_type or "application/octet-stream",
+        )
+
+        create_upload_record(
+            upload_id=upload_id,
+            project_id=project_id,
+            owner=user_id,
+            upload_type="rosbag",
+            project_type=project_type,
+            bucket=bucket_name,
+            raw_gcs_uri=raw_uploaded["gcs_uri"],
+            source_filename=file.filename,
+            status="processing",
+            frame_count=0,
+        )
+
+        uploaded_frames = []
+        frame_rows = []
+        frame_bytes_map = {}
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            bag_path = os.path.join(temp_dir, file.filename)
+
+            with open(bag_path, "wb") as f:
+                f.write(content)
+
+            frames = extract_frames_from_rosbag(bag_path, temp_dir)
+
+            for idx, frame in enumerate(frames):
+                with open(frame["local_path"], "rb") as f:
+                    frame_bytes = f.read()
+
+                frame_id = f"{upload_id}_{idx:06d}"
+                frame_bytes_map[frame_id] = frame_bytes
+
+                frame_filename = f"frame_{idx:06d}.jpg"
+                frame_gcs_path = f"projects/{project_id}/uploads/{upload_id}/frames/{frame_filename}"
+
+                frame_payload = {
+                    "id": frame_id,
+                    "source_filename": frame["frame_filename"],
+                    "frame_gcs_uri": f"gs://{bucket_name}/{frame_gcs_path}",
+                    "status": "queued",
+                    "owner": user_id,
+                    "upload_id": upload_id,
+                    "project_id": project_id,
+                }
+
+                frame_rows.append(frame_payload)
+                uploaded_frames.append(frame_payload)
+
+        insert_frame_records(frame_rows)
+
+        update_upload_record(
+            upload_id,
+            {
+                "frame_count": len(frame_rows),
+                "status": "processing_frames",
+            }
+        )
+
+        label_ids = get_active_label_ids(project_id)
+        background_tasks.add_task(
+            process_upload,
+            upload_id=upload_id,
+            project_id=project_id,
+            user_id=user_id,
+            frame_records=frame_rows,
+            label_ids=label_ids,
+            frame_bytes_map=frame_bytes_map,
+        )
+
+        return {
+            "project_id": project_id,
+            "project_type": project_type,
+            "upload_id": upload_id,
+            "type": "rosbag",
+            "bucket": bucket_name,
+            "raw_gcs_uri": raw_uploaded["gcs_uri"],
+            "frame_count": len(uploaded_frames),
+            "frames": uploaded_frames,
+            "status": "processing_frames",
+        }
 
     raise HTTPException(status_code=400, detail="Unsupported upload request")
 
@@ -257,3 +377,73 @@ def get_project_frames(
     frames = get_project_frames_with_detections(project_id)
 
     return {"frames": frames}
+
+def is_rosbag_file(file: UploadFile) -> bool:
+    filename = (file.filename or "").lower()
+    content_type = (file.content_type or "").lower()
+
+    return filename.endswith(".bag") or content_type in {
+        "application/octet-stream",
+        "application/x-bag",
+    }
+
+def extract_frames_from_rosbag(
+    bag_path: str,
+    output_dir: str,
+    image_topic: str = None,
+):
+    bridge = CvBridge()
+    extracted_frames = []
+
+    with rosbag.Bag(bag_path, "r") as bag:
+        topics_info = bag.get_type_and_topic_info().topics
+
+        available_image_topics = [
+            topic_name
+            for topic_name, topic_info in topics_info.items()
+            if topic_info.msg_type in [
+                "sensor_msgs/Image",
+                "sensor_msgs/CompressedImage",
+            ]
+        ]
+
+        if not available_image_topics:
+            raise HTTPException(
+                status_code=400,
+                detail="No image topic found in rosbag"
+            )
+
+        selected_topic = image_topic or available_image_topics[0]
+
+        idx = 0
+        for _, msg, _ in bag.read_messages(topics=[selected_topic]):
+            try:
+                if msg._type == "sensor_msgs/Image":
+                    cv_image = bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
+                elif msg._type == "sensor_msgs/CompressedImage":
+                    np_arr = np.frombuffer(msg.data, np.uint8)
+                    cv_image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+                else:
+                    continue
+
+                frame_filename = f"frame_{idx:06d}.jpg"
+                local_path = os.path.join(output_dir, frame_filename)
+
+                cv2.imwrite(local_path, cv_image)
+
+                extracted_frames.append({
+                    "frame_filename": frame_filename,
+                    "local_path": local_path,
+                })
+                idx += 1
+
+            except Exception:
+                continue
+
+    if not extracted_frames:
+        raise HTTPException(
+            status_code=400,
+            detail="No frames could be extracted from rosbag"
+        )
+
+    return extracted_frames
