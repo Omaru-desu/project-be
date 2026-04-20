@@ -1,6 +1,9 @@
 from app.services.supabase_service import get_supabase_client
 from fastapi import HTTPException
+from google.cloud import storage
+from datetime import timedelta
 
+storage_client = storage.Client()
 supabase = get_supabase_client()
 
 def create_upload_record(
@@ -102,6 +105,23 @@ def get_frames_for_upload(upload_id: str):
 
     return result.data or []
 
+def generate_signed_url(gcs_uri: str) -> str:
+    # gs://bucket/path/to/file.jpg → bucket + blob
+    parts = gcs_uri.replace("gs://", "").split("/", 1)
+    bucket_name = parts[0]
+    blob_name = parts[1]
+
+    bucket = storage_client.bucket(bucket_name)
+    blob = bucket.blob(blob_name)
+
+    url = blob.generate_signed_url(
+        version="v4",
+        expiration=timedelta(hours=24),
+        method="GET",
+    )
+
+    return url
+
 def get_project_frames_with_detections(project_id: str):
     try:
         uploads_res = (
@@ -159,11 +179,14 @@ def get_project_frames_with_detections(project_id: str):
 
     result = []
     for frame in frames:
+        signed_url = generate_signed_url(frame["frame_gcs_uri"])
+
         result.append({
             "id": frame["id"],
             "upload_id": frame["upload_id"],
             "source_filename": frame["source_filename"],
             "frame_gcs_uri": frame["frame_gcs_uri"],
+            "frame_url": signed_url,
             "status": frame["status"],
             "detections": detections_map.get(frame["id"], [])
         })
