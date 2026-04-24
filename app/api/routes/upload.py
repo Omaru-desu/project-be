@@ -11,7 +11,7 @@ from io import BytesIO
 from app.auth import get_current_user
 from app.services.gcp_storage import upload_to_gcp, get_bucket_name
 from app.services.video_processor import extract_frames
-from app.api.helper.upload import create_upload_record, update_upload_record, insert_frame_records, get_project_for_user, get_project_frames_with_detections
+from app.api.helper.upload import create_upload_record, update_upload_record, insert_frame_records, get_project_for_user, get_project_frames_with_detections, get_detections_by_frame
 from app.api.helper.segment import get_active_label_ids
 from app.services.process_service import process_upload
 
@@ -257,3 +257,11 @@ def get_project_frames(
     frames = get_project_frames_with_detections(project_id)
 
     return {"frames": frames}
+
+@router.get("/projects/{project_id}/frames/{frame_id}/detections")
+def get_frame_detections(
+    project_id: str,
+    frame_id: str,
+    user_id: str = Depends(get_current_user),
+):
+    return get_detections_by_frame(project_id, frame_id, user_id)

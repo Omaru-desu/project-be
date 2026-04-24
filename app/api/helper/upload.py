@@ -192,3 +192,48 @@ def get_project_frames_with_detections(project_id: str):
         })
 
     return result
+
+def get_detections_by_frame(project_id: str, frame_id: str, user_id: str):
+    project = (
+        supabase
+        .table("projects")
+        .select("*")
+        .eq("id", project_id)
+        .eq("owner", user_id)
+        .single()
+        .execute()
+    )
+
+    if not project.data:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    frame = (
+        supabase
+        .table("frames")
+        .select("*")
+        .eq("id", frame_id)
+        .single()
+        .execute()
+    )
+
+    if not frame.data:
+        raise HTTPException(status_code=404, detail="Frame not found")
+
+    # verify frame belongs to project
+    if frame.data["project_id"] != project_id:
+        raise HTTPException(status_code=403, detail="Frame does not belong to this project")
+
+    detections_res = (
+        supabase
+        .table("detections")
+        .select("*")
+        .eq("frame_id", frame_id)
+        .execute()
+    )
+
+    detections = detections_res.data or []
+
+    return {
+        "frame_id": frame_id,
+        "detections": detections
+    }
