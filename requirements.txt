@@ -2,3 +2,9 @@ fastapi
 uvicorn[standard]
 python-dotenv
 python-multipart
+google-cloud-storage
+opencv-python-headless
+supabase
+pillow
+httpx
+anyio
