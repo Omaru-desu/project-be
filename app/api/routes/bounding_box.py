@@ -105,7 +105,7 @@ async def create_bounding_box(
         "bbox": bbox.bbox,
         "score": bbox.score if bbox.score is not None else 0.0,
         "crop_gcs_uri": "",
-        "status": "needs_review",
+        "status": "reviewed", 
         "annotation_source": "human",
     }
 
