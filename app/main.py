@@ -14,6 +14,7 @@ from app.api.routes.embed import router as embed_router
 from app.api.routes.status import router as status_router
 from app.api.routes.preview import router as preview_router
 from app.api.routes.review import router as review_router
+from app.api.routes import bounding_box
 
 cors_origins = os.getenv("CORS_ORIGINS", "http://localhost:3000")
 allow_origins = [origin.strip() for origin in cors_origins.split(",") if origin.strip()]
@@ -37,3 +38,4 @@ app.include_router(embed_router, prefix="/api")
 app.include_router(status_router, prefix="/api")
 app.include_router(preview_router, prefix="/api")
 app.include_router(review_router, prefix="/api")
+app.include_router(bounding_box.router, prefix="/api")
