@@ -86,7 +86,18 @@ def get_projects(user_id: str = Depends(get_current_user)):
             .execute()
         )
 
-        return result.data or []
+        projects = result.data or []
+        for project in projects:
+            count_res = (
+                supabase
+                .table("frames")
+                .select("id", count="exact")
+                .eq("project_id", project["id"])
+                .execute()
+            )
+            project["frame_count"] = count_res.count or 0
+
+        return projects
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -106,7 +117,17 @@ def get_project(project_id: str, user_id: str = Depends(get_current_user)):
         if not result.data:
             raise HTTPException(status_code=404, detail="Project not found")
 
-        return result.data[0]
+        project = result.data[0]
+        count_res = (
+            supabase
+            .table("frames")
+            .select("id", count="exact")
+            .eq("project_id", project_id)
+            .execute()
+        )
+        project["frame_count"] = count_res.count or 0
+
+        return project
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -141,16 +162,27 @@ def delete_project(
     project_id: str,
     user_id: str = Depends(get_current_user)
 ):
-    result = (
+    project = (
         supabase
         .table("projects")
-        .delete()
+        .select("id")
         .eq("id", project_id)
         .eq("owner", user_id)
         .execute()
     )
 
-    if not result.data:
+    if not project.data:
         raise HTTPException(status_code=404, detail="Project not found")
+
+    try:
+        supabase.table("detection_embeddings").delete().eq("project_id", project_id).execute()
+        supabase.table("frame_embeddings").delete().eq("project_id", project_id).execute()
+        supabase.table("detections").delete().eq("project_id", project_id).execute()
+        supabase.table("project_labels").delete().eq("project_id", project_id).execute()
+        supabase.table("frames").delete().eq("project_id", project_id).execute()
+        supabase.table("uploads").delete().eq("project_id", project_id).execute()
+        supabase.table("projects").delete().eq("id", project_id).execute()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to delete project: {e}")
 
     return {"message": "Deleted"}
