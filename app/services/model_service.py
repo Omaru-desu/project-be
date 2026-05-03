@@ -7,12 +7,18 @@ from fastapi import HTTPException
 
 MODEL_SERVICE_URL = os.getenv("MODEL_SERVICE_URL", "http://localhost:8001")
 
+_client = httpx.AsyncClient(
+    base_url=MODEL_SERVICE_URL,
+    timeout=6000.0,
+    follow_redirects=True,
+    limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
+)
 
-def _post(path: str, payload: dict, timeout: float = 120.0) -> dict:
+
+async def _post(path: str, payload: dict, timeout: float = 120.0) -> dict:
     try:
-        with httpx.Client(timeout=timeout) as client:
-            response = client.post(f"{MODEL_SERVICE_URL}{path}", json=payload)
-            response.raise_for_status()
+        response = await _client.post(path, json=payload, timeout=timeout)
+        response.raise_for_status()
     except httpx.HTTPStatusError as exc:
         raise HTTPException(
             status_code=502,
@@ -26,15 +32,15 @@ def _post(path: str, payload: dict, timeout: float = 120.0) -> dict:
     return response.json()
 
 
-def embed_frames(frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return _post("/embed/frames", {"frames": frames})["results"]
+async def embed_frames(frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return (await _post("/embed/frames", {"frames": frames}))["results"]
 
 
-def segment_frames(frames: list[dict[str, Any]], label_ids: list[str] | None = None) -> list[dict[str, Any]]:
+async def segment_frames(frames: list[dict[str, Any]], label_ids: list[str] | None = None) -> list[dict[str, Any]]:
     payload: dict[str, Any] = {"frames": frames}
     if label_ids is not None:
         payload["label_ids"] = label_ids
-    return _post("/segment/frames", payload)["results"]
+    return (await _post("/segment/frames", payload))["results"]
 
 
 async def process_frames(
@@ -51,23 +57,23 @@ async def process_frames(
     if label_ids is not None:
         data["label_ids"] = json.dumps(label_ids)
 
-    try:
-        async with httpx.AsyncClient(timeout=600.0) as client:
-            response = await client.post(
-                f"{MODEL_SERVICE_URL}/process/frames",
-                files=files,
-                data=data,
-            )
+    for attempt in range(2):
+        try:
+            response = await _client.post("/process/frames", files=files, data=data)
             response.raise_for_status()
-    except httpx.HTTPStatusError as exc:
-        raise HTTPException(
-            status_code=502,
-            detail=f"Model service returned {exc.response.status_code}: {exc.response.text}",
-        ) from exc
-    except httpx.RequestError as exc:
-        raise HTTPException(
-            status_code=503,
-            detail=f"Could not reach model service: {exc}",
-        ) from exc
-
-    return response.json()["results"]
+            return response.json()["results"]
+        except httpx.HTTPStatusError as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Model service returned {exc.response.status_code}: {exc.response.text}",
+            ) from exc
+        except (httpx.RemoteProtocolError, httpx.LocalProtocolError, AssertionError) as exc:
+            if attempt == 0:
+                await _client.aclose()
+                continue
+            raise HTTPException(status_code=503, detail=f"Could not reach model service: {exc}") from exc
+        except httpx.RequestError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail=f"Could not reach model service: {exc}",
+            ) from exc

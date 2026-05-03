@@ -8,6 +8,7 @@ from google.cloud import storage
 client = storage.Client()
 ACTIVE_BUCKET = "active-omaru"
 TEST_BUCKET = "test-omaru"
+_GCS_TIMEOUT = 300  # seconds per individual request
 
 
 def get_bucket_name(project_type: str) -> str:
@@ -20,7 +21,7 @@ def upload_to_gcp(file_bytes, bucket_name, destination_blob_name, content_type):
     bucket = client.bucket(bucket_name)
     blob = bucket.blob(destination_blob_name)
 
-    blob.upload_from_string(file_bytes, content_type=content_type)
+    blob.upload_from_string(file_bytes, content_type=content_type, timeout=_GCS_TIMEOUT)
 
     url = blob.generate_signed_url(
         version="v4",
@@ -47,7 +48,7 @@ def download_bytes_from_gcs(gcs_uri: str) -> bytes:
     bucket_name, blob_name = parse_gcs_uri(gcs_uri)
     bucket = client.bucket(bucket_name)
     blob = bucket.blob(blob_name)
-    return blob.download_as_bytes()
+    return blob.download_as_bytes(timeout=_GCS_TIMEOUT)
 
 
 def upload_pil_image_to_gcs(image: Image.Image, gcs_uri: str, format: str = "PNG") -> str:
@@ -64,7 +65,7 @@ def upload_pil_image_to_gcs(image: Image.Image, gcs_uri: str, format: str = "PNG
         content_type = "image/png"
 
     buf.seek(0)
-    blob.upload_from_string(buf.getvalue(), content_type=content_type)
+    blob.upload_from_string(buf.getvalue(), content_type=content_type, timeout=_GCS_TIMEOUT)
     return gcs_uri
 
 
@@ -72,7 +73,7 @@ def upload_bytes_to_gcs(data: bytes, gcs_uri: str, content_type: str = "applicat
     bucket_name, blob_name = parse_gcs_uri(gcs_uri)
     bucket = client.bucket(bucket_name)
     blob = bucket.blob(blob_name)
-    blob.upload_from_string(data, content_type=content_type)
+    blob.upload_from_string(data, content_type=content_type, timeout=_GCS_TIMEOUT)
     return gcs_uri
 
 

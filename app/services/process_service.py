@@ -38,7 +38,7 @@ async def process_upload(
     try:
         update_upload_record(upload_id, {"status": "segmenting"})
 
-        chunk_size = 5
+        chunk_size = 20
         total_frames = len(frame_records)
         frames_processed = 0
 
@@ -84,7 +84,6 @@ async def process_upload(
 
                     upload_pairs.append((crop_image, crop_gcs_uri, mask_image, mask_gcs_uri, det))
 
-                # Upload original frame, all crops and masks for this frame in parallel
                 tasks = [
                     upload_bytes_to_gcs_async(chunk_bytes_map[frame_id], frame_gcs_uri, "image/jpeg")
                 ]
@@ -147,6 +146,12 @@ async def process_upload(
 
         update_upload_record(upload_id, {"status": "ready"})
 
+    except asyncio.CancelledError:
+        update_upload_record(upload_id, {
+            "status": "failed",
+            "error_message": "Processing was interrupted (server restart or timeout)",
+        })
+        raise
     except Exception as exc:
         update_upload_record(upload_id, {
             "status": "failed",
