@@ -106,3 +106,17 @@ def review_detection_label(
         raise HTTPException(status_code=500, detail=f"Failed to update detection: {exc}") from exc
 
     return update_res.data[0] if update_res.data else {}
+
+@router.delete("/detections/{detection_id}")
+def delete_detection(
+    detection_id: str,
+    user_id: str = Depends(get_current_user),
+):
+    _get_detection_and_verify_owner(detection_id, user_id)
+
+    try:
+        supabase.table("detections").delete().eq("id", detection_id).execute()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to delete detection: {exc}") from exc
+
+    return {"success": True}
