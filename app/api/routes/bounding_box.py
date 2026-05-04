@@ -179,7 +179,6 @@ async def get_bounding_box(
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
-
 @router.put(
     "/projects/{project_id}/frames/{frame_id}/bounding-boxes/{bbox_id}",
     response_model=BoundingBoxResponse
@@ -194,6 +193,15 @@ async def update_bounding_box(
     _verify_project_ownership(project_id, user_id)
 
     update_data = bbox.model_dump(exclude_unset=True)
+    
+    # only keep fields that exist in the detections table
+    allowed_fields = {"bbox", "display_label", "score", "status"}
+    update_data = {k: v for k, v in update_data.items() if k in allowed_fields}
+    
+    # also update label_id if display_label is being changed
+    if "display_label" in update_data:
+        update_data["label_id"] = _derive_label_id(update_data["display_label"])
+
     if not update_data:
         raise HTTPException(status_code=400, detail="No data to update")
 
@@ -205,7 +213,7 @@ async def update_bounding_box(
             .eq("id", bbox_id)
             .eq("frame_id", frame_id)
             .eq("project_id", project_id)
-            .eq("annotation_source", "human")   # safety: can only edit human rows
+            .eq("annotation_source", "human")
             .execute()
         )
         if not result.data:
@@ -214,7 +222,6 @@ async def update_bounding_box(
 
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
-
 
 @router.delete(
     "/projects/{project_id}/frames/{frame_id}/bounding-boxes/{bbox_id}",
