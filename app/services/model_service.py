@@ -32,22 +32,13 @@ async def _post(path: str, payload: dict, timeout: float = 120.0) -> dict:
     return response.json()
 
 
-async def embed_frames(frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return (await _post("/embed/frames", {"frames": frames}))["results"]
-
-
-async def segment_frames(frames: list[dict[str, Any]], label_ids: list[str] | None = None) -> list[dict[str, Any]]:
-    payload: dict[str, Any] = {"frames": frames}
-    if label_ids is not None:
-        payload["label_ids"] = label_ids
-    return (await _post("/segment/frames", payload))["results"]
-
-
-async def process_frames(
+async def _post_multipart(
+    path: str,
     frame_bytes_map: dict[str, bytes],
     frames_metadata: list[dict],
-    label_ids: list[str] | None = None,
+    label_ids: list[str] | None,
 ) -> list[dict[str, Any]]:
+
     files = [
         (frame_id, (f"{frame_id}.jpg", frame_bytes, "image/jpeg"))
         for frame_id, frame_bytes in frame_bytes_map.items()
@@ -59,7 +50,7 @@ async def process_frames(
 
     for attempt in range(2):
         try:
-            response = await _client.post("/process/frames", files=files, data=data)
+            response = await _client.post(path, files=files, data=data)
             response.raise_for_status()
             return response.json()["results"]
         except httpx.HTTPStatusError as exc:
@@ -77,3 +68,39 @@ async def process_frames(
                 status_code=503,
                 detail=f"Could not reach model service: {exc}",
             ) from exc
+
+    # Unreachable but keeps type checkers happy.
+    raise HTTPException(status_code=503, detail="Model service request failed")
+
+async def warmup() -> None:
+      try:
+          await _client.get("/health", timeout=5.0)
+      except Exception:
+          pass 
+      
+
+async def embed_frames(frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return (await _post("/embed/frames", {"frames": frames}))["results"]
+
+
+async def segment_frames(frames: list[dict[str, Any]], label_ids: list[str] | None = None) -> list[dict[str, Any]]:
+    payload: dict[str, Any] = {"frames": frames}
+    if label_ids is not None:
+        payload["label_ids"] = label_ids
+    return (await _post("/segment/frames", payload))["results"]
+
+
+async def process_frames(
+    frame_bytes_map: dict[str, bytes],
+    frames_metadata: list[dict],
+    label_ids: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    return await _post_multipart("/process/frames", frame_bytes_map, frames_metadata, label_ids)
+
+
+async def process_frames_deim(
+    frame_bytes_map: dict[str, bytes],
+    frames_metadata: list[dict],
+    label_ids: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    return await _post_multipart("/process/frames-deim", frame_bytes_map, frames_metadata, label_ids)
