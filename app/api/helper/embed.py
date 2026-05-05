@@ -53,3 +53,19 @@ def upsert_frame_embeddings(rows: list[dict]) -> list[dict]:
         raise HTTPException(status_code=500, detail=f"Failed to upsert frame embeddings: {exc}") from exc
 
     return result.data or []
+
+def upsert_clip_detection_embeddings(rows: list[dict]) -> list[dict]:
+    if not rows:
+        return []
+
+    try:
+        result = (
+            supabase
+            .table("clip_detection_embeddings")
+            .upsert(rows, on_conflict="id")
+            .execute()
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to upsert CLIP detection embeddings: {exc}") from exc
+
+    return result.data or []

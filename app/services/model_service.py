@@ -104,3 +104,45 @@ async def process_frames_deim(
     label_ids: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     return await _post_multipart("/process/frames-deim", frame_bytes_map, frames_metadata, label_ids)
+    return response.json()["results"]
+
+
+async def embed_text(text: str) -> list[float]:
+    result = await _post("/embed/text", {"text": text}, timeout=30.0)
+    return result["embedding"]
+
+
+async def embed_crop_image_dino(image_bytes: bytes) -> list[float]:
+    try:
+        response = await _client.post(
+            "/embed/crop-dino",
+            files={"file": ("crop.jpg", image_bytes, "image/jpeg")},
+            timeout=30.0,
+        )
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Model service returned {exc.response.status_code}: {exc.response.text}",
+        ) from exc
+    except httpx.RequestError as exc:
+        raise HTTPException(status_code=503, detail=f"Could not reach model service: {exc}") from exc
+    return response.json()["embedding"]
+
+
+async def embed_crop_image(image_bytes: bytes) -> list[float]:
+    try:
+        response = await _client.post(
+            "/embed/crop",
+            files={"file": ("crop.jpg", image_bytes, "image/jpeg")},
+            timeout=30.0,
+        )
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Model service returned {exc.response.status_code}: {exc.response.text}",
+        ) from exc
+    except httpx.RequestError as exc:
+        raise HTTPException(status_code=503, detail=f"Could not reach model service: {exc}") from exc
+    return response.json()["embedding"]

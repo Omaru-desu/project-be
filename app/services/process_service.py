@@ -3,7 +3,7 @@ import base64
 
 from app.api.helper.upload import update_upload_record, update_frame_record
 from app.api.helper.segment import insert_detection_records
-from app.api.helper.embed import upsert_detection_embeddings, upsert_frame_embeddings
+from app.api.helper.embed import upsert_detection_embeddings, upsert_frame_embeddings, upsert_clip_detection_embeddings
 from app.services.gcp_storage import (
     upload_bytes_to_gcs_async,
     build_detection_artifact_gcs_uris,
@@ -64,6 +64,7 @@ async def process_upload(
             frame_embedding_rows: list[dict] = []
             detection_embedding_rows: list[dict] = []
             per_frame_artifacts: list[tuple[str, bytes, str, list[tuple[str, str, str, str]]]] = []
+            clip_embedding_rows: list[dict] = []
 
             for frame_result in model_results:
                 frame_id = frame_result["frame_id"]
@@ -109,6 +110,16 @@ async def process_upload(
                             "embedding": det["crop_embedding"],
                         })
 
+                    if det.get("clip_embedding") is not None:
+                        clip_embedding_rows.append({
+                            "id": detection_id,
+                            "frame_id": frame_id,
+                            "project_id": project_id,
+                            "upload_id": upload_id,
+                            "crop_gcs_uri": crop_gcs_uri,
+                            "embedding": det["clip_embedding"],
+                        })
+
                 if frame_result.get("frame_embedding"):
                     frame_embedding_rows.append({
                         "id": frame_id,
@@ -129,6 +140,9 @@ async def process_upload(
 
             if detection_embedding_rows:
                 upsert_detection_embeddings(detection_embedding_rows)
+
+            if clip_embedding_rows:
+                upsert_clip_detection_embeddings(clip_embedding_rows)
 
             frames_processed += len(chunk_records)
             update_upload_record(upload_id, {
