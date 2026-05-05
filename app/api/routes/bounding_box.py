@@ -1,11 +1,17 @@
+from io import BytesIO
 from typing import List, Optional
 from datetime import datetime
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.concurrency import run_in_threadpool
+from PIL import Image
 from pydantic import BaseModel, Field
 
 from app.auth import get_current_user
+from app.api.helper.embed import upsert_clip_detection_embeddings, upsert_detection_embeddings
+from app.services.gcp_storage import download_bytes_from_gcs
+from app.services.model_service import embed_crop_image, embed_crop_image_dino
 from app.services.supabase_service import get_supabase_client
 
 router = APIRouter()
@@ -111,14 +117,55 @@ async def create_bounding_box(
 
     try:
         result = supabase.table("detections").insert(payload).execute()
-
         if not result.data:
             raise HTTPException(status_code=500, detail="Failed to create bounding box")
-
-        return result.data[0]
-
+        detection = result.data[0]
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
+
+    # Generate CLIP embedding for the crop so it appears in semantic search
+    try:
+        frame_res = (
+            supabase.table("frames")
+            .select("frame_gcs_uri")
+            .eq("id", frame_id)
+            .single()
+            .execute()
+        )
+        frame_gcs_uri = frame_res.data["frame_gcs_uri"] if frame_res.data else None
+
+        if frame_gcs_uri:
+            frame_bytes = await run_in_threadpool(download_bytes_from_gcs, frame_gcs_uri)
+            image = Image.open(BytesIO(frame_bytes)).convert("RGB")
+            x1, y1, x2, y2 = [int(v) for v in bbox.bbox]
+            crop = image.crop((x1, y1, x2, y2))
+            buf = BytesIO()
+            crop.convert("RGB").save(buf, format="JPEG", quality=90)
+            crop_bytes = buf.getvalue()
+
+            clip_embedding = await embed_crop_image(crop_bytes)
+            upsert_clip_detection_embeddings([{
+                "id": detection["id"],
+                "frame_id": frame_id,
+                "project_id": project_id,
+                "upload_id": frame.get("upload_id"),
+                "crop_gcs_uri": "",
+                "embedding": clip_embedding,
+            }])
+
+            dino_embedding = await embed_crop_image_dino(crop_bytes)
+            upsert_detection_embeddings([{
+                "id": detection["id"],
+                "frame_id": frame_id,
+                "project_id": project_id,
+                "upload_id": frame.get("upload_id"),
+                "crop_gcs_uri": "",
+                "embedding": dino_embedding,
+            }])
+    except Exception:
+        pass  
+
+    return detection
 
 
 @router.get(
