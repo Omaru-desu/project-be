@@ -9,6 +9,7 @@ from app.services.gcp_storage import (
     build_detection_artifact_gcs_uris,
 )
 from app.services.model_service import process_frames_deim as call_model_process_frames
+from app.services.supabase_service import get_supabase_client
 
 
 async def _upload_frame_artifacts(
@@ -24,6 +25,17 @@ async def _upload_frame_artifacts(
     await asyncio.gather(*tasks)
     update_frame_record(frame_id, {"status": "segmented"})
 
+def _get_project_model(project_id: str) -> dict | None:
+    supabase = get_supabase_client()
+    res = (
+        supabase
+        .table("project_models")
+        .select("*")
+        .eq("project_id", project_id)
+        .single()
+        .execute()
+    )
+    return res.data
 
 async def process_upload(
     upload_id: str,
@@ -41,6 +53,12 @@ async def process_upload(
         frames_processed = 0
         upload_tasks: list[asyncio.Task] = []
 
+        project_model = _get_project_model(project_id)
+        is_custom_untrained = (
+            project_model is not None and
+            project_model["model_type"] == "custom" and
+            project_model["checkpoint_url"] is None
+        )
         for i in range(0, total_frames, chunk_size):
             chunk_records = frame_records[i : i + chunk_size]
             chunk_bytes_map = {}
@@ -58,7 +76,13 @@ async def process_upload(
                     "upload_id": upload_id,
                 })
 
-            model_results = await call_model_process_frames(chunk_bytes_map, chunk_metadata, label_ids)
+            if is_custom_untrained:
+                model_results = [
+                    {"frame_id": f["id"], "detections": [], "frame_embedding": None, "clip_frame_embedding": None}
+                    for f in chunk_records
+                ]
+            else:
+                model_results = await call_model_process_frames(chunk_bytes_map, chunk_metadata, label_ids)
 
             detection_rows: list[dict] = []
             frame_embedding_rows: list[dict] = []

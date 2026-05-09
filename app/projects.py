@@ -28,6 +28,7 @@ class ProjectCreate(BaseModel):
     description: str
     type: str
     frame_count: int
+    model_type: str = "pretrained"
 
 
 class ProjectResponse(BaseModel):
@@ -35,6 +36,8 @@ class ProjectResponse(BaseModel):
     name: str
     description: str
     type: str
+    model_type: str
+    has_checkpoint: bool
     frame_count: int
     created_at: datetime
     owner: str
@@ -69,8 +72,20 @@ def create_project(
             for label_id in LABEL_IDS
         ]
         supabase.table("project_labels").insert(label_rows).execute()
+        pretrained_url = os.getenv("PRETRAINED_CHECKPOINT_URL")
 
-        return result.data[0]
+        model_payload = {
+            "project_id": project_id,
+            "model_type": project.model_type,
+            "checkpoint_url": pretrained_url if project.model_type == "pretrained" else None,
+            "approved_since_last_retrain": 0,
+        }
+        supabase.table("project_models").insert(model_payload).execute()
+
+        project_data = result.data[0]
+        project_data["model_type"] = project.model_type
+        project_data["has_checkpoint"] = project.model_type == "pretrained"
+        return project_data
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -96,6 +111,20 @@ def get_projects(user_id: str = Depends(get_current_user)):
                 .execute()
             )
             project["frame_count"] = count_res.count or 0
+            model_res = (
+                supabase
+                .table("project_models")
+                .select("model_type, checkpoint_url")
+                .eq("project_id", project["id"])
+                .single()
+                .execute()
+            )
+            project["model_type"] = model_res.data["model_type"] if model_res.data else "pretrained"
+            project["has_checkpoint"] = (
+                model_res.data["model_type"] == "pretrained" or 
+                bool(model_res.data.get("checkpoint_url"))
+            ) if model_res.data else True
+        
 
         return projects
 
@@ -126,7 +155,20 @@ def get_project(project_id: str, user_id: str = Depends(get_current_user)):
             .execute()
         )
         project["frame_count"] = count_res.count or 0
-
+        model_res = (
+            supabase
+            .table("project_models")
+            .select("model_type, checkpoint_url")
+            .eq("project_id", project["id"])
+            .single()
+            .execute()
+        )
+        project["model_type"] = model_res.data["model_type"] if model_res.data else "pretrained"
+        project["has_checkpoint"] = (
+            model_res.data["model_type"] == "pretrained" or 
+            bool(model_res.data.get("checkpoint_url"))
+        ) if model_res.data else True
+        
         return project
 
     except Exception as e:
