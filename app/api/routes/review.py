@@ -115,7 +115,7 @@ def delete_detection(
     _get_detection_and_verify_owner(detection_id, user_id)
 
     try:
-        supabase.table("detections").delete().eq("id", detection_id).execute()
+        supabase.table("detections").update({"status": "deleted"}).eq("id", detection_id).execute()
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to delete detection: {exc}") from exc
 
