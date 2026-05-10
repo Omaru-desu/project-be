@@ -3,12 +3,13 @@ import base64
 
 from app.api.helper.upload import update_upload_record, update_frame_record
 from app.api.helper.segment import insert_detection_records
-from app.api.helper.embed import upsert_detection_embeddings, upsert_frame_embeddings
+from app.api.helper.embed import upsert_detection_embeddings, upsert_frame_embeddings, upsert_clip_detection_embeddings
 from app.services.gcp_storage import (
     upload_bytes_to_gcs_async,
     build_detection_artifact_gcs_uris,
 )
 from app.services.model_service import process_frames_deim as call_model_process_frames
+from app.services.supabase_service import get_supabase_client
 
 
 async def _upload_frame_artifacts(
@@ -24,6 +25,17 @@ async def _upload_frame_artifacts(
     await asyncio.gather(*tasks)
     update_frame_record(frame_id, {"status": "segmented"})
 
+def _get_project_model(project_id: str) -> dict | None:
+    supabase = get_supabase_client()
+    res = (
+        supabase
+        .table("project_models")
+        .select("*")
+        .eq("project_id", project_id)
+        .single()
+        .execute()
+    )
+    return res.data
 
 async def process_upload(
     upload_id: str,
@@ -41,6 +53,12 @@ async def process_upload(
         frames_processed = 0
         upload_tasks: list[asyncio.Task] = []
 
+        project_model = _get_project_model(project_id)
+        is_custom_untrained = (
+            project_model is not None and
+            project_model["model_type"] == "custom" and
+            project_model["checkpoint_url"] is None
+        )
         for i in range(0, total_frames, chunk_size):
             chunk_records = frame_records[i : i + chunk_size]
             chunk_bytes_map = {}
@@ -58,12 +76,19 @@ async def process_upload(
                     "upload_id": upload_id,
                 })
 
-            model_results = await call_model_process_frames(chunk_bytes_map, chunk_metadata, label_ids)
+            if is_custom_untrained:
+                model_results = [
+                    {"frame_id": f["id"], "detections": [], "frame_embedding": None, "clip_frame_embedding": None}
+                    for f in chunk_records
+                ]
+            else:
+                model_results = await call_model_process_frames(chunk_bytes_map, chunk_metadata, label_ids)
 
             detection_rows: list[dict] = []
             frame_embedding_rows: list[dict] = []
             detection_embedding_rows: list[dict] = []
             per_frame_artifacts: list[tuple[str, bytes, str, list[tuple[str, str, str, str]]]] = []
+            clip_embedding_rows: list[dict] = []
 
             for frame_result in model_results:
                 frame_id = frame_result["frame_id"]
@@ -109,6 +134,16 @@ async def process_upload(
                             "embedding": det["crop_embedding"],
                         })
 
+                    if det.get("clip_embedding") is not None:
+                        clip_embedding_rows.append({
+                            "id": detection_id,
+                            "frame_id": frame_id,
+                            "project_id": project_id,
+                            "upload_id": upload_id,
+                            "crop_gcs_uri": crop_gcs_uri,
+                            "embedding": det["clip_embedding"],
+                        })
+
                 if frame_result.get("frame_embedding"):
                     frame_embedding_rows.append({
                         "id": frame_id,
@@ -129,6 +164,9 @@ async def process_upload(
 
             if detection_embedding_rows:
                 upsert_detection_embeddings(detection_embedding_rows)
+
+            if clip_embedding_rows:
+                upsert_clip_detection_embeddings(clip_embedding_rows)
 
             frames_processed += len(chunk_records)
             update_upload_record(upload_id, {
