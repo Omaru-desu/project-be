@@ -15,6 +15,7 @@ from app.api.routes.status import router as status_router
 from app.api.routes.preview import router as preview_router
 from app.api.routes.review import router as review_router
 from app.api.routes import bounding_box
+from app.api.routes import model_eval
 from app.api.routes.search import router as search_router
 
 cors_origins = os.getenv("CORS_ORIGINS", "http://localhost:3000")
@@ -40,4 +41,5 @@ app.include_router(status_router, prefix="/api")
 app.include_router(preview_router, prefix="/api")
 app.include_router(review_router, prefix="/api")
 app.include_router(bounding_box.router, prefix="/api")
+app.include_router(model_eval.router, prefix="/api")
 app.include_router(search_router, prefix="/api")
