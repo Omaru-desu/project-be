@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
@@ -107,6 +109,13 @@ async def review_detection_label(
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to update detection: {exc}") from exc
+
+    try:
+        if project_id:
+            supabase.table("projects").update({"updated_at": datetime.now(timezone.utc).isoformat()}).eq("id", project_id).execute()
+    except Exception:
+        pass
+
     return update_res.data[0] if update_res.data else {}
 
 @router.delete("/detections/{detection_id}")
