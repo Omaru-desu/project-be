@@ -3,20 +3,21 @@ import uuid
 import tempfile
 from typing import List
 
-from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, BackgroundTasks
+from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, BackgroundTasks, Form
 
 from PIL import Image
 from io import BytesIO
 
+
 from app.auth import get_current_user
 from app.services.gcp_storage import upload_to_gcp, get_bucket_name
 from app.services.video_processor import extract_frames
-from app.api.helper.upload import create_upload_record, update_upload_record, insert_frame_records, get_project_for_user, get_project_frames_with_detections, get_detections_by_frame
+from app.api.helper.upload import create_upload_record, get_upload_frames_paginated, update_upload_record, insert_frame_records, get_project_for_user, get_project_frames_with_detections, get_detections_by_frame, get_datasets_for_project
 from app.api.helper.segment import get_active_label_ids
 from app.services.process_service import process_upload
 import asyncio
 from app.services.model_service import warmup
-  
+
 
 router = APIRouter()
 
@@ -25,6 +26,7 @@ async def upload_files(
     project_id: str,
     background_tasks: BackgroundTasks,
     files: List[UploadFile] = File(...),
+    name: str = Form(...), 
     user_id: str = Depends(get_current_user)
 ):
     asyncio.create_task(warmup())
@@ -78,6 +80,7 @@ async def upload_files(
             source_filename=None if len(image_files) > 1 else image_files[0].filename,
             status="processing",
             frame_count=0,
+            name=name, 
         )
 
         uploaded_frames = []
@@ -177,6 +180,7 @@ async def upload_files(
             source_filename=file.filename,
             status="processing",
             frame_count=0,
+            name=name,
         )
 
         uploaded_frames = []
@@ -269,3 +273,22 @@ def get_frame_detections(
     user_id: str = Depends(get_current_user),
 ):
     return get_detections_by_frame(project_id, frame_id, user_id)
+
+@router.get("/projects/{project_id}/datasets")
+def get_datasets(
+    project_id: str,
+    user_id: str = Depends(get_current_user),
+):
+    get_project_for_user(project_id, user_id)
+    return get_datasets_for_project(project_id)
+
+@router.get("/projects/{project_id}/datasets/{upload_id}/frames")
+def get_upload_frames(
+    project_id: str,
+    upload_id: str,
+    page: int = 1,
+    limit: int = 50,
+    user_id: str = Depends(get_current_user),
+):
+    get_project_for_user(project_id, user_id)
+    return get_upload_frames_paginated(upload_id, page, limit)
