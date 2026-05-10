@@ -127,14 +127,16 @@ def get_projects(user_id: str = Depends(get_current_user)):
                 .table("project_models")
                 .select("model_type, checkpoint_url")
                 .eq("project_id", project["id"])
-                .single()
+                .limit(1)
                 .execute()
             )
-            project["model_type"] = model_res.data["model_type"] if model_res.data else "pretrained"
+            model_data = model_res.data[0] if model_res.data else None
+
+            project["model_type"] = model_data["model_type"] if model_data else "pretrained"
             project["has_checkpoint"] = (
-                model_res.data["model_type"] == "pretrained" or 
-                bool(model_res.data.get("checkpoint_url"))
-            ) if model_res.data else True
+                model_data["model_type"] == "pretrained" or 
+                bool(model_data.get("checkpoint_url"))
+            ) if model_data else True
         
             s = stats_by_id.get(project["id"], {})
             project["frame_count"]     = s.get("frame_count", 0) or 0
@@ -175,14 +177,16 @@ def get_project(project_id: str, user_id: str = Depends(get_current_user)):
             .table("project_models")
             .select("model_type, checkpoint_url")
             .eq("project_id", project["id"])
-            .single()
+            .limit(1)
             .execute()
         )
-        project["model_type"] = model_res.data["model_type"] if model_res.data else "pretrained"
+        model_data = model_res.data[0] if model_res.data else None
+
+        project["model_type"] = model_data["model_type"] if model_data else "pretrained"
         project["has_checkpoint"] = (
-            model_res.data["model_type"] == "pretrained" or 
-            bool(model_res.data.get("checkpoint_url"))
-        ) if model_res.data else True
+            model_data["model_type"] == "pretrained" or 
+            bool(model_data.get("checkpoint_url"))
+        ) if model_data else True
         
         return project
 
