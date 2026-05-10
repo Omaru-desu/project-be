@@ -38,6 +38,9 @@ class ProjectResponse(BaseModel):
     frame_count: int
     created_at: datetime
     owner: str
+    updated_at: Optional[datetime] = None
+    reviewed_count: Optional[int] = 0
+    detection_count: Optional[int] = 0
 
 class ProjectUpdate(BaseModel):
     name: Optional[str] = None
@@ -78,24 +81,28 @@ def create_project(
 @router.get("/projects", response_model=List[ProjectResponse])
 def get_projects(user_id: str = Depends(get_current_user)):
     try:
-        result = (
+        projects_res = (
             supabase
             .table("projects")
             .select("*")
             .eq("owner", user_id)
             .execute()
         )
+        projects = projects_res.data or []
+        if not projects:
+            return projects
 
-        projects = result.data or []
+        stats_res = supabase.rpc("get_project_stats", {"p_owner": str(user_id)}).execute()
+        stats_by_id = {
+            row["project_id"]: row
+            for row in (stats_res.data or [])
+        }
+
         for project in projects:
-            count_res = (
-                supabase
-                .table("frames")
-                .select("id", count="exact")
-                .eq("project_id", project["id"])
-                .execute()
-            )
-            project["frame_count"] = count_res.count or 0
+            s = stats_by_id.get(project["id"], {})
+            project["frame_count"]     = s.get("frame_count", 0) or 0
+            project["detection_count"] = s.get("detection_count", 0) or 0
+            project["reviewed_count"]  = s.get("reviewed_count", 0) or 0
 
         return projects
 
