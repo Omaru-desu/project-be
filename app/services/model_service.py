@@ -146,3 +146,36 @@ async def embed_crop_image(image_bytes: bytes) -> list[float]:
     except httpx.RequestError as exc:
         raise HTTPException(status_code=503, detail=f"Could not reach model service: {exc}") from exc
     return response.json()["embedding"]
+
+async def segment_frame_with_prompt(
+    image_bytes: bytes,
+    prompt: str,
+) -> dict[str, Any]:
+
+    try:
+        response = await _client.post(
+            "/segment/image",
+            files={
+                "file": ("frame.jpg", image_bytes, "image/jpeg"),
+            },
+            data={
+                "prompt": prompt,
+            },
+            timeout=120.0,
+        )
+
+        response.raise_for_status()
+
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Model service returned {exc.response.status_code}: {exc.response.text}",
+        ) from exc
+
+    except httpx.RequestError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Could not reach model service: {exc}",
+        ) from exc
+
+    return response.json()
