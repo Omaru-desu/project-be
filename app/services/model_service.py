@@ -146,3 +146,9 @@ async def embed_crop_image(image_bytes: bytes) -> list[float]:
     except httpx.RequestError as exc:
         raise HTTPException(status_code=503, detail=f"Could not reach model service: {exc}") from exc
     return response.json()["embedding"]
+
+async def retrain_project(project_id: str, annotations: list[dict]) -> dict:
+    return await _post("/model/retrain", {
+        "project_id": project_id,
+        "annotations": annotations,
+    }, timeout=600.0)

@@ -188,6 +188,7 @@ def get_project_frames_with_detections(project_id: str):
             "frame_gcs_uri": frame["frame_gcs_uri"],
             "frame_url": signed_url,
             "status": frame["status"],
+            "is_approved": frame.get("is_approved", False), 
             "detections": detections_map.get(frame["id"], [])
         })
 
