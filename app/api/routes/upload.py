@@ -141,6 +141,7 @@ async def upload_files(
             frame_records=frame_rows,
             label_ids=label_ids,
             frame_bytes_map=frame_bytes_map,
+            upload_type=upload_type,
         )
 
         return {
@@ -239,6 +240,7 @@ async def upload_files(
             frame_records=frame_rows,
             label_ids=label_ids,
             frame_bytes_map=frame_bytes_map,
+            upload_type="video",
         )
 
         return {
