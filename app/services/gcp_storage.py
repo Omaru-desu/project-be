@@ -102,3 +102,13 @@ def build_detection_artifact_gcs_uris(
     mask_gcs_uri = f"gs://{bucket_name}/{prefix}/detections/{detection_id}/mask.png"
 
     return crop_gcs_uri, mask_gcs_uri
+
+def download_bytes_from_gcs(gcs_uri: str) -> bytes:
+    from google.cloud import storage
+    # gcs_uri format: gs://bucket-name/path/to/file
+    uri = gcs_uri.replace("gs://", "")
+    bucket_name, blob_path = uri.split("/", 1)
+    client = storage.Client()
+    bucket = client.bucket(bucket_name)
+    blob = bucket.blob(blob_path)
+    return blob.download_as_bytes()
