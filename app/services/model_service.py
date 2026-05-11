@@ -37,6 +37,7 @@ async def _post_multipart(
     frame_bytes_map: dict[str, bytes],
     frames_metadata: list[dict],
     label_ids: list[str] | None,
+    extra_form: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
 
     files = [
@@ -47,6 +48,8 @@ async def _post_multipart(
     data = {"frames_metadata": json.dumps(frames_metadata)}
     if label_ids is not None:
         data["label_ids"] = json.dumps(label_ids)
+    if extra_form:
+        data.update(extra_form)
 
     for attempt in range(2):
         try:
@@ -102,9 +105,23 @@ async def process_frames_deim(
     frame_bytes_map: dict[str, bytes],
     frames_metadata: list[dict],
     label_ids: list[str] | None = None,
+    upload_id: str | None = None,
+    upload_type: str | None = None,
+    is_final_chunk: bool = False,
 ) -> list[dict[str, Any]]:
-    return await _post_multipart("/process/frames-deim", frame_bytes_map, frames_metadata, label_ids)
-    return response.json()["results"]
+    extra: dict[str, str] = {}
+    if upload_id:
+        extra["upload_id"] = upload_id
+    if upload_type:
+        extra["upload_type"] = upload_type
+    extra["is_final_chunk"] = "true" if is_final_chunk else "false"
+    return await _post_multipart(
+        "/process/frames-deim",
+        frame_bytes_map,
+        frames_metadata,
+        label_ids,
+        extra_form=extra,
+    )
 
 
 async def embed_text(text: str) -> list[float]:

@@ -32,16 +32,18 @@ async def process_upload(
     frame_records: list[dict],
     label_ids: list[str] | None,
     frame_bytes_map: dict[str, bytes],
+    upload_type: str = "",
 ) -> None:
     try:
         update_upload_record(upload_id, {"status": "segmenting"})
 
         chunk_size = 50
         total_frames = len(frame_records)
+        total_chunks = (total_frames + chunk_size - 1) // chunk_size
         frames_processed = 0
         upload_tasks: list[asyncio.Task] = []
 
-        for i in range(0, total_frames, chunk_size):
+        for chunk_num, i in enumerate(range(0, total_frames, chunk_size)):
             chunk_records = frame_records[i : i + chunk_size]
             chunk_bytes_map = {}
             chunk_metadata = []
@@ -58,7 +60,15 @@ async def process_upload(
                     "upload_id": upload_id,
                 })
 
-            model_results = await call_model_process_frames(chunk_bytes_map, chunk_metadata, label_ids)
+            is_final_chunk = (chunk_num == total_chunks - 1)
+            model_results = await call_model_process_frames(
+                chunk_bytes_map,
+                chunk_metadata,
+                label_ids,
+                upload_id=upload_id,
+                upload_type=upload_type,
+                is_final_chunk=is_final_chunk,
+            )
 
             detection_rows: list[dict] = []
             frame_embedding_rows: list[dict] = []
