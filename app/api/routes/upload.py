@@ -12,7 +12,8 @@ from io import BytesIO
 from app.auth import get_current_user
 from app.services.gcp_storage import upload_to_gcp, get_bucket_name
 from app.services.video_processor import extract_frames
-from app.api.helper.upload import create_upload_record, get_upload_frames_paginated, update_upload_record, insert_frame_records, get_project_for_user, get_project_frames_with_detections, get_detections_by_frame, get_datasets_for_project
+from app.api.helper.upload import create_upload_record, get_upload_frames_paginated, update_upload_record, insert_frame_records, get_project_for_user, get_project_frames_with_detections, get_detections_by_frame, get_datasets_for_project, generate_signed_url
+from app.services.supabase_service import get_supabase_client
 from app.api.helper.segment import get_active_label_ids
 from app.services.process_service import process_upload
 import asyncio
@@ -20,6 +21,7 @@ from app.services.model_service import warmup
 
 
 router = APIRouter()
+supabase = get_supabase_client()
 
 @router.post("/projects/{project_id}/upload")
 async def upload_files(
@@ -294,3 +296,30 @@ def get_upload_frames(
 ):
     get_project_for_user(project_id, user_id)
     return get_upload_frames_paginated(upload_id, page, limit)
+
+
+@router.get("/projects/{project_id}/tracks")
+def get_project_tracks(
+    project_id: str,
+    upload_id: str | None = None,
+    user_id: str = Depends(get_current_user),
+):
+    get_project_for_user(project_id, user_id)
+
+    query = supabase.table("tracks").select("*").eq("project_id", project_id)
+    if upload_id:
+        query = query.eq("upload_id", upload_id)
+    res = query.order("frame_count", desc=True).execute()
+    tracks = res.data or []
+
+    for track in tracks:
+        rep_uri = track.get("representative_crop_gcs_uri")
+        signed: str | None = None
+        if rep_uri:
+            try:
+                signed = generate_signed_url(rep_uri)
+            except Exception:
+                signed = None
+        track["representative_crop_url"] = signed
+
+    return {"tracks": tracks}

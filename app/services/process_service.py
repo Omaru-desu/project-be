@@ -23,7 +23,6 @@ async def _upload_frame_artifacts(
         tasks.append(upload_bytes_to_gcs_async(base64.b64decode(crop_b64), crop_uri, "image/jpeg"))
         tasks.append(upload_bytes_to_gcs_async(base64.b64decode(mask_b64), mask_uri, "image/png"))
     await asyncio.gather(*tasks)
-    update_frame_record(frame_id, {"status": "segmented"})
 
 def _get_project_model(project_id: str) -> dict | None:
     supabase = get_supabase_client()
@@ -54,6 +53,7 @@ async def process_upload(
         total_chunks = (total_frames + chunk_size - 1) // chunk_size
         frames_processed = 0
         upload_tasks: list[asyncio.Task] = []
+        uploaded_frame_ids: list[str] = []
 
         project_model = _get_project_model(project_id)
         is_custom_untrained = (
@@ -186,6 +186,7 @@ async def process_upload(
             })
 
             for frame_id, frame_bytes, frame_gcs_uri, detection_artifacts in per_frame_artifacts:
+                uploaded_frame_ids.append(frame_id)
                 upload_tasks.append(asyncio.create_task(
                     _upload_frame_artifacts(frame_id, frame_bytes, frame_gcs_uri, detection_artifacts)
                 ))
@@ -193,6 +194,9 @@ async def process_upload(
 
         if upload_tasks:
             await asyncio.gather(*upload_tasks)
+
+        for frame_id in uploaded_frame_ids:
+            update_frame_record(frame_id, {"status": "segmented"})
 
         update_upload_record(upload_id, {"status": "ready"})
 
