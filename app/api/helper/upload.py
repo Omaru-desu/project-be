@@ -177,6 +177,7 @@ def get_project_frames_with_detections(project_id: str):
             "taxon": det.get("taxon"),
             "display_label": det.get("display_label"),
             "score": det.get("score"),
+            "track_id": det.get("track_id"),
         })
 
     result = []
