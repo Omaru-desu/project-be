@@ -108,6 +108,7 @@ async def process_upload(
                         "crop_gcs_uri": crop_gcs_uri,
                         "mask_gcs_uri": mask_gcs_uri,
                         "status": "needs_review",
+                        "track_id": det.get("track_id"),
                     })
 
                     if det.get("crop_embedding"):
