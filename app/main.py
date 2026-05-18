@@ -18,6 +18,7 @@ from app.api.routes import bounding_box
 from app.api.routes import model_eval
 from app.api.routes.search import router as search_router
 from app.api.routes import reevaluate
+from app.api.routes import tracks
 
 cors_origins = os.getenv("CORS_ORIGINS", "http://localhost:3000")
 allow_origins = [origin.strip() for origin in cors_origins.split(",") if origin.strip()]
@@ -45,3 +46,4 @@ app.include_router(bounding_box.router, prefix="/api")
 app.include_router(model_eval.router, prefix="/api")
 app.include_router(search_router, prefix="/api")
 app.include_router(reevaluate.router, prefix="/api")
+app.include_router(tracks.router, prefix="/api")
