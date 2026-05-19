@@ -131,7 +131,7 @@ async def reevaluate_frame(
             "crop_gcs_uri": det.get("crop_gcs_uri", ""),   # ← add empty string fallback
             "mask_gcs_uri": det.get("mask_gcs_uri", ""), 
             "status": "needs_review",
-            "annotation_source": "machine",
+            "annotation_source": "sam3",
         })
 
     insert_detection_records(detection_rows)
