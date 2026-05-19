@@ -18,6 +18,7 @@ from app.api.helper.segment import get_active_label_ids
 from app.services.process_service import process_upload
 import asyncio
 from app.services.model_service import warmup
+from app.services.gcp_storage import upload_file_to_gcp
 
 
 router = APIRouter()
@@ -43,12 +44,15 @@ async def upload_files(
 
     image_files = []
     video_files = []
+    rosbag_files = []
 
     for file in files:
         if not file.content_type:
             raise HTTPException(status_code=400, detail=f"Missing content type for {file.filename}")
 
-        if file.content_type.startswith("image"):
+        if file.filename and (file.filename.endswith(".bag") or file.filename.endswith(".db3")):
+            rosbag_files.append(file)
+        elif file.content_type.startswith("image"):
             image_files.append(file)
         elif file.content_type.startswith("video"):
             video_files.append(file)
@@ -59,6 +63,12 @@ async def upload_files(
         raise HTTPException(
             status_code=400,
             detail="Please upload either images or a video in one request, not both"
+        )
+    
+    if rosbag_files and (image_files or video_files):
+        raise HTTPException(
+            status_code=400,
+            detail="Please upload only one file type at a time"
         )
 
     if len(video_files) > 1:
@@ -255,6 +265,63 @@ async def upload_files(
             "frame_count": len(uploaded_frames),
             "frames": uploaded_frames,
             "status": "processing_frames",
+        }
+ 
+    if rosbag_files:
+        file = rosbag_files[0]
+ 
+        with tempfile.TemporaryDirectory() as temp_dir:
+            bag_path = os.path.join(temp_dir, file.filename)
+            with open(bag_path, "wb") as f:
+                while chunk := await file.read(1024 * 1024): 
+                    f.write(chunk)
+
+            raw_path = f"projects/{project_id}/uploads/{upload_id}/raw/{file.filename}"
+            raw_uploaded = upload_file_to_gcp(
+                file_path=bag_path,
+                bucket_name=bucket_name,
+                destination_blob_name=raw_path,
+                content_type="application/octet-stream",
+            )
+ 
+            create_upload_record(
+                upload_id=upload_id,
+                project_id=project_id,
+                owner=user_id,
+                upload_type="rosbag",
+                project_type=project_type,
+                bucket=bucket_name,
+                raw_gcs_uri=raw_uploaded["gcs_uri"],
+                source_filename=file.filename,
+                status="processing",
+                frame_count=0,
+                name=name,
+            )
+ 
+            label_ids = get_active_label_ids(project_id)
+            background_tasks.add_task(
+                process_upload,
+                upload_id=upload_id,
+                project_id=project_id,
+                user_id=user_id,
+                frame_records=[],         
+                label_ids=label_ids,
+                frame_bytes_map={},       
+                upload_type="rosbag",
+                rosbag_gcs_uri=raw_uploaded["gcs_uri"],      
+                bucket_name=bucket_name,    
+            )
+ 
+        return {
+            "project_id": project_id,
+            "project_type": project_type,
+            "upload_id": upload_id,
+            "type": "rosbag",
+            "bucket": bucket_name,
+            "raw_gcs_uri": raw_uploaded["gcs_uri"],
+            "frame_count": 0,
+            "frames": [],
+            "status": "processing",
         }
 
     raise HTTPException(status_code=400, detail="Unsupported upload request")

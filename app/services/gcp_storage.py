@@ -103,12 +103,22 @@ def build_detection_artifact_gcs_uris(
 
     return crop_gcs_uri, mask_gcs_uri
 
-def download_bytes_from_gcs(gcs_uri: str) -> bytes:
-    from google.cloud import storage
-    # gcs_uri format: gs://bucket-name/path/to/file
-    uri = gcs_uri.replace("gs://", "")
-    bucket_name, blob_path = uri.split("/", 1)
-    client = storage.Client()
+# def download_bytes_from_gcs(gcs_uri: str) -> bytes:
+#     from google.cloud import storage
+#     # gcs_uri format: gs://bucket-name/path/to/file
+#     uri = gcs_uri.replace("gs://", "")
+#     bucket_name, blob_path = uri.split("/", 1)
+#     client = storage.Client()
+#     bucket = client.bucket(bucket_name)
+#     blob = bucket.blob(blob_path)
+#     return blob.download_as_bytes()
+
+def upload_file_to_gcp(file_path: str, bucket_name: str, destination_blob_name: str, content_type: str):
     bucket = client.bucket(bucket_name)
-    blob = bucket.blob(blob_path)
-    return blob.download_as_bytes()
+    blob = bucket.blob(destination_blob_name)
+
+    with open(file_path, "rb") as f:
+        blob.upload_from_file(f, content_type=content_type, timeout=_GCS_TIMEOUT)
+
+    gcs_uri = f"gs://{bucket_name}/{destination_blob_name}"
+    return {"gcs_uri": gcs_uri}
