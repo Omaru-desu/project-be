@@ -35,7 +35,7 @@ def get_model_performance(
     try:
         response = (
             supabase.table("detections")
-            .select("annotation_source, status, original_label, display_label")
+            .select("annotation_source, status, original_label, display_label, is_deleted")
             .eq("project_id", project_id)
             .neq("status", "needs_review")
             .execute()
@@ -51,6 +51,7 @@ def get_model_performance(
             .select("id", count="exact")
             .eq("project_id", project_id)
             .eq("status", "needs_review")
+            .eq("is_deleted", False)
             .execute()
         )
         uncertain_count = uncertain_response.count or 0
@@ -66,7 +67,7 @@ def get_model_performance(
         display_label  = d.get("display_label")
 
         if source == "machine":
-            if status == "deleted":
+            if d.get("is_deleted"):
                 stats[original_label]["fp"] += 1
 
             elif status == "reviewed":
