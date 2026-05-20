@@ -1,4 +1,6 @@
 import logging
+import threading
+import time
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
@@ -12,6 +14,64 @@ from app.services import model_service
 router = APIRouter()
 supabase = get_supabase_client()
 logger = logging.getLogger(__name__)
+
+RETRAIN_THRESHOLD = 10
+MAX_CONSECUTIVE_FAILURES = 3
+DRAIN_POLL_INTERVAL_S = 30
+DRAIN_MAX_WAIT_S = 6 * 60 * 60
+
+
+def _rpc_fail_loudly(rpc_name: str, exc: Exception) -> None:
+    msg = str(exc)
+    if rpc_name in msg or "function" in msg.lower() or "PGRST202" in msg:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                f"Postgres function `{rpc_name}` is missing. The atomic "
+                "retrain trigger requires this function plus the columns "
+                "`retrain_pending bool` and `retrain_consecutive_failures int` "
+                "on project_models. See the docstring at the top of "
+                "app/api/routes/review.py for the exact DDL and apply it "
+                "out of band before using this build."
+            ),
+        ) from exc
+    raise HTTPException(status_code=500, detail=f"{rpc_name} failed: {exc}") from exc
+
+
+def _claim_retrain_slot(project_id: str) -> str:
+    try:
+        res = supabase.rpc(
+            "claim_retrain_slot",
+            {"p_project_id": project_id, "p_threshold": RETRAIN_THRESHOLD},
+        ).execute()
+    except Exception as exc:
+        _rpc_fail_loudly("claim_retrain_slot", exc)
+        return ""  # unreachable, _rpc_fail_loudly always raises
+
+    outcome = res.data if isinstance(res.data, str) else (res.data[0] if res.data else None)
+    if outcome not in ("below_threshold", "acquired", "coalesced"):
+        raise HTTPException(
+            status_code=500,
+            detail=f"claim_retrain_slot returned unexpected value: {outcome!r}",
+        )
+    return outcome
+
+
+def _drain_pending_slot(project_id: str) -> bool:
+    try:
+        res = supabase.rpc(
+            "drain_retrain_slot",
+            {
+                "p_project_id": project_id,
+                "p_max_consec_failures": MAX_CONSECUTIVE_FAILURES,
+            },
+        ).execute()
+    except Exception as exc:
+        _rpc_fail_loudly("drain_retrain_slot", exc)
+        return False  # unreachable
+
+    value = res.data if isinstance(res.data, str) else (res.data[0] if res.data else None)
+    return value == "drained"
 
 
 class ReviewDetectionLabel(BaseModel):
@@ -195,6 +255,7 @@ def _ensure_class_indices(project_id: str, display_labels: list[str]) -> dict[st
 
 def _trigger_retrain(project_id: str, model_type: str) -> None:
     logger.info("[retrain %s] trigger start (model_type=%s)", project_id, model_type)
+    spawn_succeeded = False
     try:
         reviewed_res = (
             supabase
@@ -274,11 +335,6 @@ def _trigger_retrain(project_id: str, model_type: str) -> None:
             for lbl, idx in sorted(class_map.items(), key=lambda kv: kv[1])
         ]
 
-        supabase.table("project_models").update({
-            "retrain_status": "queued",
-            "retrain_error": None,
-        }).eq("project_id", project_id).execute()
-        logger.info("[retrain %s] DB set retrain_status=queued", project_id)
 
         logger.info(
             "[retrain %s] POST -> model service /model/retrain "
@@ -299,9 +355,9 @@ def _trigger_retrain(project_id: str, model_type: str) -> None:
 
         supabase.table("project_models").update({
             "retrain_job_id": job_id,
-            "retrain_status": spawn_result.get("status", "queued"),
         }).eq("project_id", project_id).execute()
-        logger.info("[retrain %s] DB set retrain_job_id and status — trigger done", project_id)
+        logger.info("[retrain %s] DB set retrain_job_id — trigger done", project_id)
+        spawn_succeeded = True
     except Exception as exc:
         logger.exception("[retrain %s] trigger failed", project_id)
         try:
@@ -312,6 +368,77 @@ def _trigger_retrain(project_id: str, model_type: str) -> None:
             }).eq("project_id", project_id).execute()
         except Exception:
             logger.exception("[retrain %s] also failed to record failure to DB", project_id)
+
+    _schedule_drain_watch(project_id)
+
+
+def _schedule_drain_watch(project_id: str) -> None:
+    threading.Thread(
+        target=_wait_and_drain_loop,
+        args=(project_id,),
+        name=f"drain-watch-{project_id}",
+        daemon=True,
+    ).start()
+
+
+def _wait_and_drain_loop(project_id: str) -> None:
+    logger.info("[drain-watch %s] started", project_id)
+    deadline = time.time() + DRAIN_MAX_WAIT_S
+    terminal_status: str | None = None
+    model_type = "pretrained"
+    while time.time() < deadline:
+        try:
+            res = (
+                supabase
+                .table("project_models")
+                .select("retrain_status, model_type")
+                .eq("project_id", project_id)
+                .single()
+                .execute()
+            )
+            row = res.data or {}
+            status = row.get("retrain_status")
+            if status in ("ready", "failed"):
+                terminal_status = status
+                model_type = row.get("model_type") or "pretrained"
+                break
+        except Exception:
+            logger.exception(
+                "[drain-watch %s] poll failed, will retry in %ds",
+                project_id, DRAIN_POLL_INTERVAL_S,
+            )
+        time.sleep(DRAIN_POLL_INTERVAL_S)
+
+    if terminal_status is None:
+        logger.warning(
+            "[drain-watch %s] timed out after %ds — backstop must drain",
+            project_id, DRAIN_MAX_WAIT_S,
+        )
+        return
+
+    logger.info(
+        "[drain-watch %s] observed terminal status=%s, attempting drain",
+        project_id, terminal_status,
+    )
+    try:
+        drained = _drain_pending_slot(project_id)
+    except HTTPException:
+        logger.exception("[drain-watch %s] drain RPC missing", project_id)
+        return
+
+    if not drained:
+        logger.info(
+            "[drain-watch %s] no pending follow-up (or failure-cap reached)",
+            project_id,
+        )
+        return
+
+    logger.info(
+        "[drain-watch %s] drained -> re-entering _trigger_retrain "
+        "(model_type=%s)",
+        project_id, model_type,
+    )
+    _trigger_retrain(project_id, model_type)
 
 
 @router.post("/projects/{project_id}/frames/{frame_id}/approve")
@@ -338,47 +465,39 @@ async def approve_frame(
         "status": "reviewed"
     }).eq("frame_id", frame_id).eq("status", "needs_review").execute()
 
-    model_res = (
-        supabase
-        .table("project_models")
-        .select("*")
-        .eq("project_id", project_id)
-        .single()
-        .execute()
-    )
+    outcome = _claim_retrain_slot(project_id)
+    did_retrain = outcome == "acquired"
 
-    did_retrain = False
-    if model_res.data:
-        model_row = model_res.data
-        current_count = model_row["approved_since_last_retrain"] + 1
-        did_retrain = current_count >= 10
-        logger.info(
-            "[approve %s frame=%s] counter %d -> %d (status=%s)",
-            project_id, frame_id, model_row["approved_since_last_retrain"],
-            current_count, model_row.get("retrain_status"),
+    if did_retrain:
+        mt_res = (
+            supabase
+            .table("project_models")
+            .select("model_type")
+            .eq("project_id", project_id)
+            .single()
+            .execute()
         )
-
-        if did_retrain:
-            logger.info(
-                "[approve %s frame=%s] threshold hit — resetting counter and scheduling retrain",
-                project_id, frame_id,
-            )
-            supabase.table("project_models").update({
-                "approved_since_last_retrain": 0
-            }).eq("id", model_row["id"]).execute()
-
-            background_tasks.add_task(
-                _trigger_retrain,
-                project_id,
-                model_row["model_type"],
-            )
-        else:
-            supabase.table("project_models").update({
-                "approved_since_last_retrain": current_count
-            }).eq("id", model_row["id"]).execute()
+        model_type = (mt_res.data or {}).get("model_type") or "pretrained"
+        logger.info(
+            "[approve %s frame=%s] outcome=acquired model_type=%s -> "
+            "scheduling _trigger_retrain via BackgroundTasks",
+            project_id, frame_id, model_type,
+        )
+        background_tasks.add_task(_trigger_retrain, project_id, model_type)
+    elif outcome == "coalesced":
+        logger.info(
+            "[approve %s frame=%s] outcome=coalesced — pending flag set, "
+            "drain will pick this up after the current retrain finishes",
+            project_id, frame_id,
+        )
+    else:  # below_threshold
+        logger.info(
+            "[approve %s frame=%s] outcome=below_threshold",
+            project_id, frame_id,
+        )
 
     supabase.table("frames").update({
         "is_approved": True
     }).eq("id", frame_id).execute()
 
-    return {"retrained": did_retrain}
+    return {"retrained": did_retrain, "outcome": outcome}
