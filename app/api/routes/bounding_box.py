@@ -3,7 +3,7 @@ from typing import List, Optional
 from datetime import datetime
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from fastapi.concurrency import run_in_threadpool
 from PIL import Image
 from pydantic import BaseModel, Field
@@ -80,8 +80,59 @@ def _verify_frame_exists(frame_id: str, project_id: str):
         raise HTTPException(status_code=404, detail="Frame not found")
     return result.data[0]
 
+
 def _derive_label_id(display_label: str) -> str:
     return display_label.strip().lower().replace(" ", "_")
+
+
+async def _embed_bbox_crop(
+    detection_id: str,
+    frame_id: str,
+    project_id: str,
+    upload_id: Optional[str],
+    bbox: list[float],
+):
+    try:
+        frame_res = (
+            supabase.table("frames")
+            .select("frame_gcs_uri")
+            .eq("id", frame_id)
+            .single()
+            .execute()
+        )
+        frame_gcs_uri = frame_res.data["frame_gcs_uri"] if frame_res.data else None
+        if not frame_gcs_uri:
+            return
+
+        frame_bytes = await run_in_threadpool(download_bytes_from_gcs, frame_gcs_uri)
+        image = Image.open(BytesIO(frame_bytes)).convert("RGB")
+        x1, y1, x2, y2 = [int(v) for v in bbox]
+        crop = image.crop((x1, y1, x2, y2))
+        buf = BytesIO()
+        crop.convert("RGB").save(buf, format="JPEG", quality=90)
+        crop_bytes = buf.getvalue()
+
+        clip_embedding = await embed_crop_image(crop_bytes)
+        upsert_clip_detection_embeddings([{
+            "id": detection_id,
+            "frame_id": frame_id,
+            "project_id": project_id,
+            "upload_id": upload_id,
+            "crop_gcs_uri": "",
+            "embedding": clip_embedding,
+        }])
+
+        dino_embedding = await embed_crop_image_dino(crop_bytes)
+        upsert_detection_embeddings([{
+            "id": detection_id,
+            "frame_id": frame_id,
+            "project_id": project_id,
+            "upload_id": upload_id,
+            "crop_gcs_uri": "",
+            "embedding": dino_embedding,
+        }])
+    except Exception:
+        pass
 
 # ─────────────────────────────────────────────
 #  ROUTES
@@ -96,6 +147,7 @@ async def create_bounding_box(
     project_id: str,
     frame_id: str,
     bbox: BoundingBoxCreate,
+    background_tasks: BackgroundTasks,
     user_id: str = Depends(get_current_user)
 ):
     _verify_project_ownership(project_id, user_id)
@@ -123,47 +175,15 @@ async def create_bounding_box(
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
-    # Generate CLIP embedding for the crop so it appears in semantic search
-    try:
-        frame_res = (
-            supabase.table("frames")
-            .select("frame_gcs_uri")
-            .eq("id", frame_id)
-            .single()
-            .execute()
-        )
-        frame_gcs_uri = frame_res.data["frame_gcs_uri"] if frame_res.data else None
 
-        if frame_gcs_uri:
-            frame_bytes = await run_in_threadpool(download_bytes_from_gcs, frame_gcs_uri)
-            image = Image.open(BytesIO(frame_bytes)).convert("RGB")
-            x1, y1, x2, y2 = [int(v) for v in bbox.bbox]
-            crop = image.crop((x1, y1, x2, y2))
-            buf = BytesIO()
-            crop.convert("RGB").save(buf, format="JPEG", quality=90)
-            crop_bytes = buf.getvalue()
-
-            clip_embedding = await embed_crop_image(crop_bytes)
-            upsert_clip_detection_embeddings([{
-                "id": detection["id"],
-                "frame_id": frame_id,
-                "project_id": project_id,
-                "upload_id": frame.get("upload_id"),
-                "crop_gcs_uri": "",
-                "embedding": clip_embedding,
-            }])
-
-            dino_embedding = await embed_crop_image_dino(crop_bytes)
-            upsert_detection_embeddings([{
-                "id": detection["id"],
-                "frame_id": frame_id,
-                "project_id": project_id,
-                "upload_id": frame.get("upload_id"),
-                "crop_gcs_uri": "",
-                "embedding": dino_embedding,
-            }])
-    except Exception:
-        pass  
+    background_tasks.add_task(
+        _embed_bbox_crop,
+        detection["id"],
+        frame_id,
+        project_id,
+        frame.get("upload_id"),
+        list(bbox.bbox),
+    )
 
     return detection
 
@@ -188,6 +208,7 @@ async def get_bounding_boxes(
             .eq("frame_id", frame_id)
             .eq("project_id", project_id)
             .eq("annotation_source", "human")   # only return human-drawn ones
+            .neq("is_deleted", True)            # hide soft-deleted bboxes
             .execute()
         )
         return result.data or []

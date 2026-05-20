@@ -156,6 +156,7 @@ def get_project_frames_with_detections(project_id: str):
             .table("detections")
             .select("*")
             .in_("frame_id", frame_ids)
+            .neq("is_deleted", True)
             .execute()
         )
         detections = detections_res.data or []
@@ -232,6 +233,7 @@ def get_detections_by_frame(project_id: str, frame_id: str, user_id: str):
         .table("detections")
         .select("*")
         .eq("frame_id", frame_id)
+        .neq("is_deleted", True)
         .execute()
     )
 

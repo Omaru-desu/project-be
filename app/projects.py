@@ -9,7 +9,7 @@ from supabase import create_client, Client
 from typing import Optional
 
 from app.auth import get_current_user
-from app.core.vocab import LABEL_IDS
+from app.core.base_classes import BASE_DEIMV2_CLASSES
 
 load_dotenv()
 
@@ -70,11 +70,17 @@ def create_project(
 
         project_id = result.data[0]["id"]
 
-        label_rows = [
-            {"project_id": project_id, "label_id": label_id, "enabled": True}
-            for label_id in LABEL_IDS
-        ]
-        supabase.table("project_labels").insert(label_rows).execute()
+        if project.model_type == "pretrained":
+            class_rows = [
+                {
+                    "project_id": project_id,
+                    "class_index": class_index,
+                    "display_label": display_label,
+                }
+                for class_index, display_label in BASE_DEIMV2_CLASSES
+            ]
+            supabase.table("project_classes").insert(class_rows).execute()
+
         pretrained_url = os.getenv("PRETRAINED_CHECKPOINT_URL")
 
         model_payload = {
@@ -240,6 +246,7 @@ def delete_project(
         supabase.table("frame_embeddings").delete().eq("project_id", project_id).execute()
         supabase.table("detections").delete().eq("project_id", project_id).execute()
         supabase.table("project_labels").delete().eq("project_id", project_id).execute()
+        supabase.table("project_classes").delete().eq("project_id", project_id).execute()
         supabase.table("frames").delete().eq("project_id", project_id).execute()
         supabase.table("uploads").delete().eq("project_id", project_id).execute()
         supabase.table("projects").delete().eq("id", project_id).execute()

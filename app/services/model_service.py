@@ -164,11 +164,64 @@ async def embed_crop_image(image_bytes: bytes) -> list[float]:
         raise HTTPException(status_code=503, detail=f"Could not reach model service: {exc}") from exc
     return response.json()["embedding"]
 
-async def retrain_project(project_id: str, annotations: list[dict]) -> dict:
-    return await _post("/model/retrain", {
+async def retrain_project(
+    project_id: str,
+    model_type: str,
+    classes: list[dict],
+    annotations: list[dict],
+) -> dict:
+    return await _post(
+        "/model/retrain",
+        {
+            "project_id": project_id,
+            "model_type": model_type,
+            "classes": classes,
+            "annotations": annotations,
+        },
+        timeout=60.0,
+    )
+
+
+def retrain_project_sync(
+    project_id: str,
+    model_type: str,
+    classes: list[dict],
+    annotations: list[dict],
+) -> dict:
+    payload = {
         "project_id": project_id,
+        "model_type": model_type,
+        "classes": classes,
         "annotations": annotations,
-    }, timeout=600.0)
+    }
+    try:
+        with httpx.Client(base_url=MODEL_SERVICE_URL, timeout=60.0) as client:
+            response = client.post("/model/retrain", json=payload)
+            response.raise_for_status()
+            return response.json()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Model service returned {exc.response.status_code}: {exc.response.text}",
+        ) from exc
+    except httpx.RequestError as exc:
+        raise HTTPException(
+            status_code=503, detail=f"Could not reach model service: {exc}",
+        ) from exc
+
+
+async def get_retrain_job(job_id: str) -> dict:
+    try:
+        response = await _client.get(f"/model/retrain/jobs/{job_id}", timeout=10.0)
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Model service returned {exc.response.status_code}: {exc.response.text}",
+        ) from exc
+    except httpx.RequestError as exc:
+        raise HTTPException(status_code=503, detail=f"Could not reach model service: {exc}") from exc
+    return response.json()
 
 async def segment_frame_with_prompt(
     image_bytes: bytes,
