@@ -121,12 +121,32 @@ async def process_upload(
         uploaded_frame_ids: list[str] = []
  
         project_model = _get_project_model(project_id)
+        model_type = project_model["model_type"] if project_model else "pretrained"
         is_custom_untrained = (
             project_model is not None and
-            project_model["model_type"] == "custom" and
-            project_model["checkpoint_url"] is None
+            model_type == "custom" and
+            project_model.get("checkpoint_url") is None
         )
- 
+
+        if is_custom_untrained:
+            upload_tasks: list[asyncio.Task] = []
+            for frame in frame_records:
+                frame_id = frame["id"]
+                frame_gcs_uri = frame["frame_gcs_uri"]
+                frame_bytes = frame_bytes_map[frame_id]
+                upload_tasks.append(asyncio.create_task(
+                    upload_bytes_to_gcs_async(frame_bytes, frame_gcs_uri, "image/jpeg")
+                ))
+            if upload_tasks:
+                await asyncio.gather(*upload_tasks)
+            for frame in frame_records:
+                update_frame_record(frame["id"], {"status": "segmented"})
+            update_upload_record(upload_id, {
+                "status": "ready",
+                "frames_processed": total_frames,
+            })
+            return
+
         for chunk_num, i in enumerate(range(0, total_frames, chunk_size)):
             chunk_records = frame_records[i : i + chunk_size]
             chunk_bytes_map = {}
@@ -142,24 +162,19 @@ async def process_upload(
                     "frame_id": frame_id,
                     "project_id": project_id,
                     "upload_id": upload_id,
+                    "model_type": model_type,
                 })
- 
-            if is_custom_untrained:
-                model_results = [
-                    {"frame_id": f["id"], "detections": [], "frame_embedding": None, "clip_frame_embedding": None}
-                    for f in chunk_records
-                ]
-            else:
-                is_final_chunk = (chunk_num == total_chunks - 1)
-                model_results = await call_model_process_frames(
-                    chunk_bytes_map,
-                    chunk_metadata,
-                    label_ids,
-                    upload_id=upload_id,
-                    upload_type=upload_type,
-                    is_final_chunk=is_final_chunk,
-                )
- 
+
+            is_final_chunk = (chunk_num == total_chunks - 1)
+            model_results = await call_model_process_frames(
+                chunk_bytes_map,
+                chunk_metadata,
+                label_ids,
+                upload_id=upload_id,
+                upload_type=upload_type,
+                is_final_chunk=is_final_chunk,
+            )
+
             detection_rows: list[dict] = []
             frame_embedding_rows: list[dict] = []
             detection_embedding_rows: list[dict] = []
