@@ -181,8 +181,6 @@ def _ensure_class_indices(project_id: str, display_labels: list[str]) -> dict[st
             existing.update({row["display_label"]: row["class_index"] for row in new_rows})
             return existing
         except Exception as exc:
-            # Likely (project_id, class_index) unique-violation from a
-            # concurrent writer. Re-read and try again.
             logger.warning(
                 "[retrain %s] class diff insert collision on attempt %d: %s — retrying",
                 project_id, attempt + 1, exc,
