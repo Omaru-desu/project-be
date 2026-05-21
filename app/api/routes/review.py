@@ -163,7 +163,6 @@ async def review_detection_label(
             .update({
                 "label_id": derived_label_id,
                 "display_label": body.display_label,
-                "status": "reviewed",
             })
             .eq("id", detection_id)
             .execute()
