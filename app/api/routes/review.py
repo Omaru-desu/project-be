@@ -149,6 +149,8 @@ def get_detection_for_review(
         "blur_score": det.get("blur_score"),
         "crop_gcs_uri": det.get("crop_gcs_uri"),
         "frame_gcs_uri": frame_gcs_uri,
+        "family": det.get("family"),
+        "family_confidence": det.get("family_confidence"),
     }
 
 

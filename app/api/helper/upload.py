@@ -180,6 +180,8 @@ def get_project_frames_with_detections(project_id: str):
             "display_label": det.get("display_label"),
             "score": det.get("score"),
             "track_id": det.get("track_id"),
+            "family": det.get("family"),
+            "family_confidence": det.get("family_confidence"),
         })
 
     result = []
