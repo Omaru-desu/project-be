@@ -1,32 +1,46 @@
 import asyncio
 import base64
-from io import BytesIO
-
-from PIL import Image
-
-from app.api.helper.upload import update_upload_record, update_frame_record
+import os
+import tempfile
+ 
+from app.api.helper.upload import update_upload_record, update_frame_record, insert_frame_records
 from app.api.helper.segment import insert_detection_records
-from app.api.helper.embed import upsert_detection_embeddings, upsert_frame_embeddings
+from app.api.helper.embed import upsert_detection_embeddings, upsert_frame_embeddings, upsert_clip_detection_embeddings
 from app.services.gcp_storage import (
     upload_bytes_to_gcs_async,
-    upload_pil_image_to_gcs_async,
     build_detection_artifact_gcs_uris,
 )
-from app.services.model_service import process_frames as call_model_process_frames
-
-
-async def _upload_detection_artifacts(
-    crop_image: Image.Image,
-    crop_gcs_uri: str,
-    mask_image: Image.Image,
-    mask_gcs_uri: str,
+from app.services.model_service import process_frames_deim as call_model_process_frames
+from app.services.supabase_service import get_supabase_client
+from app.services.rosbag_processor import extract_rosbag_frames
+ 
+ 
+async def _upload_frame_artifacts(
+    frame_id: str,
+    frame_bytes: bytes,
+    frame_gcs_uri: str,
+    detection_artifacts: list[tuple[str, str, str, str]],
 ) -> None:
-    await asyncio.gather(
-        upload_pil_image_to_gcs_async(crop_image, crop_gcs_uri, "JPEG"),
-        upload_pil_image_to_gcs_async(mask_image, mask_gcs_uri, "PNG"),
+    tasks = [upload_bytes_to_gcs_async(frame_bytes, frame_gcs_uri, "image/jpeg")]
+    for crop_b64, crop_uri, mask_b64, mask_uri in detection_artifacts:
+        tasks.append(upload_bytes_to_gcs_async(base64.b64decode(crop_b64), crop_uri, "image/jpeg"))
+        tasks.append(upload_bytes_to_gcs_async(base64.b64decode(mask_b64), mask_uri, "image/png"))
+    await asyncio.gather(*tasks)
+ 
+ 
+def _get_project_model(project_id: str) -> dict | None:
+    supabase = get_supabase_client()
+    res = (
+        supabase
+        .table("project_models")
+        .select("*")
+        .eq("project_id", project_id)
+        .single()
+        .execute()
     )
-
-
+    return res.data
+ 
+ 
 async def process_upload(
     upload_id: str,
     project_id: str,
@@ -34,20 +48,111 @@ async def process_upload(
     frame_records: list[dict],
     label_ids: list[str] | None,
     frame_bytes_map: dict[str, bytes],
+    upload_type: str = "",
+    rosbag_gcs_uri: str | None = None,   # GCS URI of the raw .bag/.db3 file
+    bucket_name: str | None = None,       # bucket name for building frame GCS paths
 ) -> None:
     try:
+        # ── ROSBAG: download from GCS, extract frames, then process ──────────
+        if upload_type == "rosbag" and rosbag_gcs_uri and bucket_name:
+            update_upload_record(upload_id, {"status": "processing_frames"})
+ 
+            from app.services.gcp_storage import download_bytes_from_gcs
+ 
+            # Download the raw bag from GCS into a temp file
+            with tempfile.TemporaryDirectory() as temp_dir:
+                # Derive filename from GCS URI (last path segment)
+                bag_filename = rosbag_gcs_uri.split("/")[-1]
+                bag_path = os.path.join(temp_dir, bag_filename)
+ 
+                # Download bag from GCS
+                bag_bytes = download_bytes_from_gcs(rosbag_gcs_uri)
+                with open(bag_path, "wb") as f:
+                    f.write(bag_bytes)
+                del bag_bytes  # free memory
+ 
+                # Extract frames from the bag
+                extract_dir = os.path.join(temp_dir, "frames")
+                os.makedirs(extract_dir, exist_ok=True)
+                extracted = extract_rosbag_frames(bag_path, extract_dir, frame_skip=10)
+ 
+                if not extracted:
+                    update_upload_record(upload_id, {
+                        "status": "failed",
+                        "error_message": "No image frames found in rosbag file",
+                    })
+                    return
+ 
+                # Build frame_records and frame_bytes_map
+                for idx, frame in enumerate(extracted):
+                    with open(frame["local_path"], "rb") as f:
+                        frame_bytes_map[f"{upload_id}_{idx:06d}"] = f.read()
+ 
+                    frame_id = f"{upload_id}_{idx:06d}"
+                    frame_filename = f"frame_{idx:06d}.jpg"
+                    frame_gcs_path = (
+                        f"projects/{project_id}/uploads/{upload_id}/frames/{frame_filename}"
+                    )
+ 
+                    frame_records.append({
+                        "id": frame_id,
+                        "source_filename": frame["frame_filename"],
+                        "frame_gcs_uri": f"gs://{bucket_name}/{frame_gcs_path}",
+                        "status": "queued",
+                        "owner": user_id,
+                        "upload_id": upload_id,
+                        "project_id": project_id,
+                    })
+ 
+                insert_frame_records(frame_records)
+                update_upload_record(upload_id, {
+                    "frame_count": len(frame_records),
+                    "status": "segmenting",
+                })
+ 
+        # ── Shared processing logic (image / video / rosbag) ─────────────────
         update_upload_record(upload_id, {"status": "segmenting"})
-
-        chunk_size = 5
+ 
+        chunk_size = 50
         total_frames = len(frame_records)
+        total_chunks = (total_frames + chunk_size - 1) // chunk_size
         frames_processed = 0
+        upload_tasks: list[asyncio.Task] = []
+        uploaded_frame_ids: list[str] = []
+ 
+        project_model = _get_project_model(project_id)
+        model_type = project_model["model_type"] if project_model else "pretrained"
+        is_custom_untrained = (
+            project_model is not None and
+            model_type == "custom" and
+            project_model.get("checkpoint_url") is None
+        )
 
-        for i in range(0, total_frames, chunk_size):
+        if is_custom_untrained:
+            upload_tasks: list[asyncio.Task] = []
+            for frame in frame_records:
+                frame_id = frame["id"]
+                frame_gcs_uri = frame["frame_gcs_uri"]
+                frame_bytes = frame_bytes_map[frame_id]
+                upload_tasks.append(asyncio.create_task(
+                    upload_bytes_to_gcs_async(frame_bytes, frame_gcs_uri, "image/jpeg")
+                ))
+            if upload_tasks:
+                await asyncio.gather(*upload_tasks)
+            for frame in frame_records:
+                update_frame_record(frame["id"], {"status": "segmented"})
+            update_upload_record(upload_id, {
+                "status": "ready",
+                "frames_processed": total_frames,
+            })
+            return
+
+        for chunk_num, i in enumerate(range(0, total_frames, chunk_size)):
             chunk_records = frame_records[i : i + chunk_size]
             chunk_bytes_map = {}
             chunk_metadata = []
             chunk_uri_map = {}
-
+ 
             for frame in chunk_records:
                 frame_id = frame["id"]
                 frame_gcs_uri = frame["frame_gcs_uri"]
@@ -57,46 +162,43 @@ async def process_upload(
                     "frame_id": frame_id,
                     "project_id": project_id,
                     "upload_id": upload_id,
+                    "model_type": model_type,
                 })
 
-            model_results = await call_model_process_frames(chunk_bytes_map, chunk_metadata, label_ids)
+            is_final_chunk = (chunk_num == total_chunks - 1)
+            model_results = await call_model_process_frames(
+                chunk_bytes_map,
+                chunk_metadata,
+                label_ids,
+                upload_id=upload_id,
+                upload_type=upload_type,
+                is_final_chunk=is_final_chunk,
+            )
 
             detection_rows: list[dict] = []
             frame_embedding_rows: list[dict] = []
             detection_embedding_rows: list[dict] = []
-
+            per_frame_artifacts: list[tuple[str, bytes, str, list[tuple[str, str, str, str]]]] = []
+            clip_embedding_rows: list[dict] = []
+ 
             for frame_result in model_results:
                 frame_id = frame_result["frame_id"]
                 frame_gcs_uri = chunk_uri_map.get(frame_id, "")
                 frame_detections = frame_result.get("detections", [])
-
-                upload_pairs = []
+ 
+                detection_artifacts: list[tuple[str, str, str, str]] = []
                 for det in frame_detections:
                     detection_id = det["detection_id"]
-
-                    crop_image = Image.open(BytesIO(base64.b64decode(det["crop_image"]))).convert("RGB")
-                    mask_image = Image.open(BytesIO(base64.b64decode(det["mask_image"]))).convert("L")
-
+ 
                     crop_gcs_uri, mask_gcs_uri = build_detection_artifact_gcs_uris(
                         frame_gcs_uri=frame_gcs_uri,
                         detection_id=detection_id,
                     )
-
-                    upload_pairs.append((crop_image, crop_gcs_uri, mask_image, mask_gcs_uri, det))
-
-                # Upload original frame, all crops and masks for this frame in parallel
-                tasks = [
-                    upload_bytes_to_gcs_async(chunk_bytes_map[frame_id], frame_gcs_uri, "image/jpeg")
-                ]
-                for (crop_img, crop_uri, mask_img, mask_uri, _) in upload_pairs:
-                    tasks.append(_upload_detection_artifacts(crop_img, crop_uri, mask_img, mask_uri))
-
-                await asyncio.gather(*tasks)
-                update_frame_record(frame_id, {"status": "segmented"})
-
-                for crop_img, crop_uri, mask_img, mask_uri, det in upload_pairs:
-                    detection_id = det["detection_id"]
-
+ 
+                    detection_artifacts.append(
+                        (det["crop_image"], crop_gcs_uri, det["mask_image"], mask_gcs_uri)
+                    )
+ 
                     detection_rows.append({
                         "id": detection_id,
                         "frame_id": frame_id,
@@ -108,21 +210,32 @@ async def process_upload(
                         "bbox": det["bbox"],
                         "score": det["score"],
                         "blur_score": det.get("blur_score"),
-                        "crop_gcs_uri": crop_uri,
-                        "mask_gcs_uri": mask_uri,
+                        "crop_gcs_uri": crop_gcs_uri,
+                        "mask_gcs_uri": mask_gcs_uri,
                         "status": "needs_review",
+                        "track_id": det.get("track_id"),
                     })
-
+ 
                     if det.get("crop_embedding"):
                         detection_embedding_rows.append({
                             "id": detection_id,
                             "frame_id": frame_id,
                             "project_id": project_id,
                             "upload_id": upload_id,
-                            "crop_gcs_uri": crop_uri,
+                            "crop_gcs_uri": crop_gcs_uri,
                             "embedding": det["crop_embedding"],
                         })
-
+ 
+                    if det.get("clip_embedding") is not None:
+                        clip_embedding_rows.append({
+                            "id": detection_id,
+                            "frame_id": frame_id,
+                            "project_id": project_id,
+                            "upload_id": upload_id,
+                            "crop_gcs_uri": crop_gcs_uri,
+                            "embedding": det["clip_embedding"],
+                        })
+ 
                 if frame_result.get("frame_embedding"):
                     frame_embedding_rows.append({
                         "id": frame_id,
@@ -131,22 +244,47 @@ async def process_upload(
                         "frame_gcs_uri": frame_gcs_uri,
                         "embedding": frame_result["frame_embedding"],
                     })
-
+ 
+                per_frame_artifacts.append(
+                    (frame_id, chunk_bytes_map[frame_id], frame_gcs_uri, detection_artifacts)
+                )
+ 
             insert_detection_records(detection_rows)
-
+ 
             if frame_embedding_rows:
                 upsert_frame_embeddings(frame_embedding_rows)
-
+ 
             if detection_embedding_rows:
                 upsert_detection_embeddings(detection_embedding_rows)
-
+ 
+            if clip_embedding_rows:
+                upsert_clip_detection_embeddings(clip_embedding_rows)
+ 
             frames_processed += len(chunk_records)
             update_upload_record(upload_id, {
                 "frames_processed": frames_processed,
             })
-
+ 
+            for frame_id, frame_bytes, frame_gcs_uri, detection_artifacts in per_frame_artifacts:
+                uploaded_frame_ids.append(frame_id)
+                upload_tasks.append(asyncio.create_task(
+                    _upload_frame_artifacts(frame_id, frame_bytes, frame_gcs_uri, detection_artifacts)
+                ))
+ 
+        if upload_tasks:
+            await asyncio.gather(*upload_tasks)
+ 
+        for frame_id in uploaded_frame_ids:
+            update_frame_record(frame_id, {"status": "segmented"})
+ 
         update_upload_record(upload_id, {"status": "ready"})
-
+ 
+    except asyncio.CancelledError:
+        update_upload_record(upload_id, {
+            "status": "failed",
+            "error_message": "Processing was interrupted (server restart or timeout)",
+        })
+        raise
     except Exception as exc:
         update_upload_record(upload_id, {
             "status": "failed",

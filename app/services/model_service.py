@@ -7,12 +7,18 @@ from fastapi import HTTPException
 
 MODEL_SERVICE_URL = os.getenv("MODEL_SERVICE_URL", "http://localhost:8001")
 
+_client = httpx.AsyncClient(
+    base_url=MODEL_SERVICE_URL,
+    timeout=6000.0,
+    follow_redirects=True,
+    limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
+)
 
-def _post(path: str, payload: dict, timeout: float = 120.0) -> dict:
+
+async def _post(path: str, payload: dict, timeout: float = 120.0) -> dict:
     try:
-        with httpx.Client(timeout=timeout) as client:
-            response = client.post(f"{MODEL_SERVICE_URL}{path}", json=payload)
-            response.raise_for_status()
+        response = await _client.post(path, json=payload, timeout=timeout)
+        response.raise_for_status()
     except httpx.HTTPStatusError as exc:
         raise HTTPException(
             status_code=502,
@@ -26,22 +32,14 @@ def _post(path: str, payload: dict, timeout: float = 120.0) -> dict:
     return response.json()
 
 
-def embed_frames(frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return _post("/embed/frames", {"frames": frames})["results"]
-
-
-def segment_frames(frames: list[dict[str, Any]], label_ids: list[str] | None = None) -> list[dict[str, Any]]:
-    payload: dict[str, Any] = {"frames": frames}
-    if label_ids is not None:
-        payload["label_ids"] = label_ids
-    return _post("/segment/frames", payload)["results"]
-
-
-async def process_frames(
+async def _post_multipart(
+    path: str,
     frame_bytes_map: dict[str, bytes],
     frames_metadata: list[dict],
-    label_ids: list[str] | None = None,
+    label_ids: list[str] | None,
+    extra_form: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
+
     files = [
         (frame_id, (f"{frame_id}.jpg", frame_bytes, "image/jpeg"))
         for frame_id, frame_bytes in frame_bytes_map.items()
@@ -50,15 +48,157 @@ async def process_frames(
     data = {"frames_metadata": json.dumps(frames_metadata)}
     if label_ids is not None:
         data["label_ids"] = json.dumps(label_ids)
+    if extra_form:
+        data.update(extra_form)
 
-    try:
-        async with httpx.AsyncClient(timeout=600.0) as client:
-            response = await client.post(
-                f"{MODEL_SERVICE_URL}/process/frames",
-                files=files,
-                data=data,
-            )
+    for attempt in range(2):
+        try:
+            response = await _client.post(path, files=files, data=data)
             response.raise_for_status()
+            return response.json()["results"]
+        except httpx.HTTPStatusError as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Model service returned {exc.response.status_code}: {exc.response.text}",
+            ) from exc
+        except (httpx.RemoteProtocolError, httpx.LocalProtocolError, AssertionError) as exc:
+            if attempt == 0:
+                await _client.aclose()
+                continue
+            raise HTTPException(status_code=503, detail=f"Could not reach model service: {exc}") from exc
+        except httpx.RequestError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail=f"Could not reach model service: {exc}",
+            ) from exc
+
+    # Unreachable but keeps type checkers happy.
+    raise HTTPException(status_code=503, detail="Model service request failed")
+
+async def warmup() -> None:
+      try:
+          await _client.get("/health", timeout=5.0)
+      except Exception:
+          pass 
+      
+
+async def embed_frames(frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return (await _post("/embed/frames", {"frames": frames}))["results"]
+
+
+async def segment_frames(frames: list[dict[str, Any]], label_ids: list[str] | None = None) -> list[dict[str, Any]]:
+    payload: dict[str, Any] = {"frames": frames}
+    if label_ids is not None:
+        payload["label_ids"] = label_ids
+    return (await _post("/segment/frames", payload))["results"]
+
+
+async def process_frames(
+    frame_bytes_map: dict[str, bytes],
+    frames_metadata: list[dict],
+    label_ids: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    return await _post_multipart("/process/frames", frame_bytes_map, frames_metadata, label_ids)
+
+
+async def process_frames_deim(
+    frame_bytes_map: dict[str, bytes],
+    frames_metadata: list[dict],
+    label_ids: list[str] | None = None,
+    upload_id: str | None = None,
+    upload_type: str | None = None,
+    is_final_chunk: bool = False,
+) -> list[dict[str, Any]]:
+    extra: dict[str, str] = {}
+    if upload_id:
+        extra["upload_id"] = upload_id
+    if upload_type:
+        extra["upload_type"] = upload_type
+    extra["is_final_chunk"] = "true" if is_final_chunk else "false"
+    return await _post_multipart(
+        "/process/frames-deim",
+        frame_bytes_map,
+        frames_metadata,
+        label_ids,
+        extra_form=extra,
+    )
+
+
+async def embed_text(text: str) -> list[float]:
+    result = await _post("/embed/text", {"text": text}, timeout=30.0)
+    return result["embedding"]
+
+
+async def embed_crop_image_dino(image_bytes: bytes) -> list[float]:
+    try:
+        response = await _client.post(
+            "/embed/crop-dino",
+            files={"file": ("crop.jpg", image_bytes, "image/jpeg")},
+            timeout=30.0,
+        )
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Model service returned {exc.response.status_code}: {exc.response.text}",
+        ) from exc
+    except httpx.RequestError as exc:
+        raise HTTPException(status_code=503, detail=f"Could not reach model service: {exc}") from exc
+    return response.json()["embedding"]
+
+
+async def embed_crop_image(image_bytes: bytes) -> list[float]:
+    try:
+        response = await _client.post(
+            "/embed/crop",
+            files={"file": ("crop.jpg", image_bytes, "image/jpeg")},
+            timeout=30.0,
+        )
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Model service returned {exc.response.status_code}: {exc.response.text}",
+        ) from exc
+    except httpx.RequestError as exc:
+        raise HTTPException(status_code=503, detail=f"Could not reach model service: {exc}") from exc
+    return response.json()["embedding"]
+
+async def retrain_project(
+    project_id: str,
+    model_type: str,
+    classes: list[dict],
+    annotations: list[dict],
+) -> dict:
+    return await _post(
+        "/model/retrain",
+        {
+            "project_id": project_id,
+            "model_type": model_type,
+            "classes": classes,
+            "annotations": annotations,
+        },
+        timeout=60.0,
+    )
+
+
+def retrain_project_sync(
+    project_id: str,
+    model_type: str,
+    classes: list[dict],
+    annotations: list[dict],
+) -> dict:
+    payload = {
+        "project_id": project_id,
+        "model_type": model_type,
+        "classes": classes,
+        "annotations": annotations,
+    }
+    try:
+        with httpx.Client(base_url=MODEL_SERVICE_URL, timeout=60.0) as client:
+            response = client.post("/model/retrain", json=payload)
+            response.raise_for_status()
+            return response.json()
     except httpx.HTTPStatusError as exc:
         raise HTTPException(
             status_code=502,
@@ -66,8 +206,52 @@ async def process_frames(
         ) from exc
     except httpx.RequestError as exc:
         raise HTTPException(
+            status_code=503, detail=f"Could not reach model service: {exc}",
+        ) from exc
+
+
+async def get_retrain_job(job_id: str) -> dict:
+    try:
+        response = await _client.get(f"/model/retrain/jobs/{job_id}", timeout=10.0)
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Model service returned {exc.response.status_code}: {exc.response.text}",
+        ) from exc
+    except httpx.RequestError as exc:
+        raise HTTPException(status_code=503, detail=f"Could not reach model service: {exc}") from exc
+    return response.json()
+
+async def segment_frame_with_prompt(
+    image_bytes: bytes,
+    prompt: str,
+) -> dict[str, Any]:
+
+    try:
+        response = await _client.post(
+            "/segment/image",
+            files={
+                "file": ("frame.jpg", image_bytes, "image/jpeg"),
+            },
+            data={
+                "prompt": prompt,
+            },
+            timeout=120.0,
+        )
+
+        response.raise_for_status()
+
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Model service returned {exc.response.status_code}: {exc.response.text}",
+        ) from exc
+
+    except httpx.RequestError as exc:
+        raise HTTPException(
             status_code=503,
             detail=f"Could not reach model service: {exc}",
         ) from exc
 
-    return response.json()["results"]
+    return response.json()
