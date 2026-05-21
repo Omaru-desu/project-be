@@ -307,11 +307,13 @@ async def delete_bounding_box(
         result = (
             supabase
             .table("detections")
-            .delete()
+            .update({
+                "is_deleted": True,
+            })
             .eq("id", bbox_id)
             .eq("frame_id", frame_id)
             .eq("project_id", project_id)
-            .eq("annotation_source", "human")   # safety: can only delete human rows
+            .eq("annotation_source", "human")   # safety: only soft-delete human rows
             .execute()
         )
         if not result.data:
