@@ -78,6 +78,12 @@ class ReviewDetectionLabel(BaseModel):
     display_label: str
 
 
+class DetectionPatch(BaseModel):
+    seen: bool | None = None
+    display_label: str | None = None
+    bbox: list[float] | None = None
+
+
 def _derive_label_id(display_label: str) -> str:
     return display_label.strip().lower().replace(" ", "_")
 
@@ -180,6 +186,40 @@ async def review_detection_label(
     return update_res.data[0] if update_res.data else {}
 
 
+@router.patch("/detections/{detection_id}")
+def patch_detection(
+    detection_id: str,
+    body: DetectionPatch,
+    user_id: str = Depends(get_current_user),
+):
+    _get_detection_and_verify_owner(detection_id, user_id)
+
+    update: dict = {}
+    if body.seen is not None:
+        update["seen"] = body.seen
+    if body.display_label is not None:
+        update["display_label"] = body.display_label
+        update["label_id"] = _derive_label_id(body.display_label)
+    if body.bbox is not None:
+        update["bbox"] = body.bbox
+
+    if not update:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    try:
+        res = (
+            supabase
+            .table("detections")
+            .update(update)
+            .eq("id", detection_id)
+            .execute()
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to update detection: {exc}") from exc
+
+    return res.data[0] if res.data else {}
+
+
 @router.delete("/detections/{detection_id}")
 def delete_detection(
     detection_id: str,
@@ -188,7 +228,9 @@ def delete_detection(
     _get_detection_and_verify_owner(detection_id, user_id)
 
     try:
-        supabase.table("detections").update({"is_deleted": True}).eq("id", detection_id).execute()
+        supabase.table("detections").update({
+            "is_deleted": True,
+        }).eq("id", detection_id).execute()
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to delete detection: {exc}") from exc
 
@@ -460,10 +502,13 @@ async def approve_frame(
     if not proj_res.data:
         raise HTTPException(status_code=403, detail="Access denied")
 
-    # bulk update all unreviewed detections in this frame to reviewed
+    # Mark every non-deleted detection in this frame as seen + reviewed.
+    # The legacy `status` field is the only persisted reviewed-marker for now;
+    # a future migration adds `reviewed` + `approved_at` for an audit trail.
     supabase.table("detections").update({
-        "status": "reviewed"
-    }).eq("frame_id", frame_id).eq("status", "needs_review").execute()
+        "seen": True,
+        "status": "reviewed",
+    }).eq("frame_id", frame_id).neq("is_deleted", True).execute()
 
     outcome = _claim_retrain_slot(project_id)
     did_retrain = outcome == "acquired"
@@ -497,7 +542,68 @@ async def approve_frame(
         )
 
     supabase.table("frames").update({
-        "is_approved": True
+        "is_approved": True,
     }).eq("id", frame_id).execute()
 
     return {"retrained": did_retrain, "outcome": outcome}
+
+
+class RevertRow(BaseModel):
+    id: str
+    seen: bool
+    status: str  # legacy field; the new `reviewed` is restored from `status == "reviewed"`
+
+
+class RevertApprovalBody(BaseModel):
+    detections: list[RevertRow]
+
+
+@router.post("/projects/{project_id}/frames/{frame_id}/revert-approval")
+def revert_frame_approval(
+    project_id: str,
+    frame_id: str,
+    body: RevertApprovalBody,
+    user_id: str = Depends(get_current_user),
+):
+    """
+    Roll back a recent approve. The client passes the per-row state that
+    existed before the approve, and we restore each row + clear the
+    image-level approval flag.
+
+    v1 limitation: not atomic. Per-row updates may partially fail.
+    """
+    proj_res = (
+        supabase
+        .table("projects")
+        .select("id")
+        .eq("id", project_id)
+        .eq("owner", user_id)
+        .single()
+        .execute()
+    )
+    if not proj_res.data:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    for row in body.detections:
+        try:
+            supabase.table("detections").update({
+                "seen": row.seen,
+                "status": row.status,
+            }).eq("id", row.id).eq("frame_id", frame_id).execute()
+        except Exception as exc:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to revert detection {row.id}: {exc}",
+            ) from exc
+
+    try:
+        supabase.table("frames").update({
+            "is_approved": False,
+        }).eq("id", frame_id).execute()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to revert frame approval: {exc}",
+        ) from exc
+
+    return {"reverted": len(body.detections)}
