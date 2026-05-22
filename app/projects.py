@@ -222,7 +222,34 @@ def update_project(
     if not result.data:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    return result.data[0]
+    updated = result.data[0]
+
+    count_res = (
+        supabase
+        .table("frames")
+        .select("id", count="exact")
+        .eq("project_id", project_id)
+        .execute()
+    )
+    updated["frame_count"] = count_res.count or 0
+
+    model_res = (
+        supabase
+        .table("project_models")
+        .select("model_type, checkpoint_url")
+        .eq("project_id", project_id)
+        .limit(1)
+        .execute()
+    )
+    model_data = model_res.data[0] if model_res.data else None
+
+    updated["model_type"] = model_data["model_type"] if model_data else "pretrained"
+    updated["has_checkpoint"] = (
+        model_data["model_type"] == "pretrained" or
+        bool(model_data.get("checkpoint_url"))
+    ) if model_data else True
+
+    return updated
 
 @router.delete("/projects/{project_id}")
 def delete_project(
